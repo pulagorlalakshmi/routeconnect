@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { ChevronDown, ChevronUp, Map, Bookmark, Check } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import type { RouteResult, RouteSegment } from '../services/routeService';
+import { isRideHailingRoute, isStandaloneRideRoute, RIDE_HAILING_NOTE } from '../services/rideHailing';
 import RouteMap from './RouteMap';
 
 const MODE_CONFIG: Record<string, { label: string; icon: string }> = {
@@ -363,10 +364,13 @@ export default function RouteCard({
 
   const totalDist = route.distanceKm || route.segments.reduce((acc, s) => acc + s.distanceKm, 0);
 
-  const isRideOption = route.segments.length === 1 && (route.segments[0].mode === 'uber' || route.segments[0].mode === 'rapido');
-  const isFastest = propIsFastest !== undefined ? propIsFastest : (route.isFastest ?? route.tag === 'fastest');
-  const isBudget = propIsBudget !== undefined ? propIsBudget : (route.isBudget ?? (route.tag === 'budget' || route.tag === 'cheapest'));
-  const isRecommended = (route.tag === 'best' || (route.tag as string) === 'recommended') && !isFastest && !isBudget;
+  // Uber/Rapido are formula-based estimates (no provider integration): never "available", never ranked as
+  // Fastest / Budget Route / Recommended, whatever the parent passes in.
+  const isRideOption = isStandaloneRideRoute(route);
+  const hasEstimatedRide = isRideHailingRoute(route);
+  const isFastest = !hasEstimatedRide && (propIsFastest !== undefined ? propIsFastest : (route.isFastest ?? route.tag === 'fastest'));
+  const isBudget = !hasEstimatedRide && (propIsBudget !== undefined ? propIsBudget : (route.isBudget ?? (route.tag === 'budget' || route.tag === 'cheapest')));
+  const isRecommended = !hasEstimatedRide && (route.tag === 'best' || (route.tag as string) === 'recommended') && !isFastest && !isBudget;
 
   const modeTitle = getRouteModeTitle(route);
   const journeySteps = buildJourneySteps(route);
@@ -839,13 +843,18 @@ export default function RouteCard({
             </span>
             {step.fare !== null && step.fare !== undefined && (
               <span className="text-sm font-black text-[#146B5B]">
-                {formatPrice(step.fare, step.currency)}
+                {(step.mode === 'uber' || step.mode === 'rapido') ? `≈ ${formatPrice(step.fare, step.currency)} (estimated)` : formatPrice(step.fare, step.currency)}
               </span>
             )}
           </div>
           <p className="text-sm font-bold text-[#1F2933]">
             {step.title} · {step.from} ➔ {step.to}
           </p>
+          {(step.mode === 'uber' || step.mode === 'rapido') && (
+            <p className="text-xs font-semibold text-amber-800">
+              Estimated fare and duration · availability not verified. {RIDE_HAILING_NOTE}
+            </p>
+          )}
           <div className="flex flex-wrap items-center gap-3 text-xs text-[#667085]">
             <span>⏱ <strong>Duration:</strong> {formatDuration(step.durationMinutes)}</span>
             <span>•</span>
@@ -917,9 +926,19 @@ export default function RouteCard({
             </span>
           )}
           {isRideOption && (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 border border-emerald-300 px-2.5 py-1 text-xs font-black text-emerald-800 shadow-2xs">
-              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              Available
+            <>
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 border border-amber-300 px-2.5 py-1 text-xs font-black text-amber-900 shadow-2xs">
+                <span className="h-2 w-2 rounded-full bg-amber-500"></span>
+                Availability not verified
+              </span>
+              <span className="inline-flex items-center rounded-full bg-slate-100 border border-slate-300 px-2.5 py-1 text-xs font-black text-slate-700 shadow-2xs">
+                Estimated option
+              </span>
+            </>
+          )}
+          {hasEstimatedRide && !isRideOption && (
+            <span className="inline-flex items-center rounded-full bg-amber-100 border border-amber-300 px-2.5 py-1 text-xs font-black text-amber-900 shadow-2xs">
+              Includes estimated ride leg
             </span>
           )}
         </div>
@@ -929,7 +948,7 @@ export default function RouteCard({
       <div className="py-4 grid grid-cols-2 sm:grid-cols-4 gap-4 items-center">
         <div className={`space-y-0.5 p-2 rounded-xl transition-all ${isFastest ? 'bg-amber-50/90 border border-amber-300 shadow-2xs' : ''}`}>
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-[#667085]">Travel Time</span>
+            <span className="text-[11px] font-bold uppercase tracking-wider text-[#667085]">{isRideOption ? 'Estimated Duration' : 'Travel Time'}</span>
             {isFastest && (
               <span className="text-[10px] font-black text-amber-900 bg-amber-200/90 px-1.5 py-0.5 rounded leading-none">
                 ⚡ Fastest
@@ -957,7 +976,7 @@ export default function RouteCard({
 
         <div className={`space-y-0.5 p-2 rounded-xl transition-all ${isBudget ? 'bg-emerald-50/90 border border-emerald-300 shadow-2xs' : ''}`}>
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-[#667085]">Estimated Cost</span>
+            <span className="text-[11px] font-bold uppercase tracking-wider text-[#667085]">{isRideOption ? 'Estimated Fare' : 'Estimated Cost'}</span>
             {isBudget && (
               <span className="text-[10px] font-black text-emerald-900 bg-emerald-200/90 px-1.5 py-0.5 rounded leading-none">
                 💰 Budget Route
@@ -969,6 +988,13 @@ export default function RouteCard({
           </p>
         </div>
       </div>
+
+      {hasEstimatedRide && (
+        <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
+          {isRideOption ? 'Estimated ride option.' : 'This route includes an estimated ride leg.'}{' '}
+          Fare and duration are estimates, not live provider data. {RIDE_HAILING_NOTE}
+        </p>
+      )}
 
       {/* Card Action Row: Overview & Show Details Toggle */}
       <div className="pt-3 flex items-center justify-between border-t border-gray-100 flex-wrap gap-2">

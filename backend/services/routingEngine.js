@@ -11,6 +11,7 @@ import { findDirectBusRoutes, findRuralFeederBus, findMultiStageBusRoutes } from
 import { fetchNearbyOsmStops } from './osmTransitService.js';
 import { validateRouteIntegrity } from './dataPipelineService.js';
 import { buildCompleteAirJourneys } from './flightService.js';
+import { isLegacyRideHailingEnabled, isRideHailingRoute, stampRideHailingRoute } from './rideHailing.js';
 
 export function calculateSegmentPrice(mode, basePrice, passengers = 1) {
   if (mode === 'train' || mode === 'bus') {
@@ -178,13 +179,14 @@ export function createGpsRideOptions(fromName, toName, directDist) {
   const rapidoPrice = Math.max(35, Math.round(directDist * 8 + 20));
   const rapidoDur = Math.max(6, Math.round(directDist * 1.8));
 
+  // Estimated options only: no Uber/Rapido integration exists. stampRideHailingRoute() adds the honest
+  // metadata (availability unknown, estimated fare/duration, not real-time) and removes trusted ranking tags.
   return [
     {
       id: `direct-uber-${Date.now()}-${Math.random().toString(36).substring(7)}`,
       from: fromName,
       to: toName,
-      routeName: 'Uber – Available',
-      availabilityStatus: 'Available',
+      routeName: 'Uber – Estimated option',
       totalPrice: uberPrice,
       totalDurationMinutes: uberDur,
       totalTransfers: 0,
@@ -199,7 +201,6 @@ export function createGpsRideOptions(fromName, toName, directDist) {
         durationMinutes: uberDur,
         distanceKm: dist,
         price: uberPrice,
-        availabilityStatus: 'Available',
         departure: null,
         arrival: null
       }]
@@ -208,8 +209,7 @@ export function createGpsRideOptions(fromName, toName, directDist) {
       id: `direct-rapido-${Date.now()}-${Math.random().toString(36).substring(7)}`,
       from: fromName,
       to: toName,
-      routeName: 'Rapido – Available',
-      availabilityStatus: 'Available',
+      routeName: 'Rapido – Estimated option',
       totalPrice: rapidoPrice,
       totalDurationMinutes: rapidoDur,
       totalTransfers: 0,
@@ -224,12 +224,11 @@ export function createGpsRideOptions(fromName, toName, directDist) {
         durationMinutes: rapidoDur,
         distanceKm: dist,
         price: rapidoPrice,
-        availabilityStatus: 'Available',
         departure: null,
         arrival: null
       }]
     }
-  ];
+  ].map(stampRideHailingRoute);
 }
 
 function formatModeTitle(mode) {
@@ -387,7 +386,7 @@ function enrichRouteDetails(route, locFrom, locTo, villageAssistance) {
     routeName = `${modeTitle}${viaText}`;
   }
 
-  return {
+  const enriched = {
     ...route,
     routeName,
     modes: modesList,
@@ -404,6 +403,9 @@ function enrichRouteDetails(route, locFrom, locTo, villageAssistance) {
     transfers,
     villageAssistance: villageAssistance || route.villageAssistance || null
   };
+
+  // Every route containing an Uber/Rapido leg is honestly labelled as estimated (no live availability).
+  return isRideHailingRoute(enriched) ? stampRideHailingRoute(enriched) : enriched;
 }
 
 export async function findMultiModalRoutes(fromCity, toCity, date, timeStr, passengersCount, originCoordinates = null) {
@@ -440,6 +442,9 @@ export async function findMultiModalRoutes(fromCity, toCity, date, timeStr, pass
   // Strict Location-Based Rule (Requirement 4):
   // IF fromLocation.type == "CURRENT_GPS_LOCATION" THEN Allow Uber/Rapido ELSE Hide Uber/Rapido
   const isCurrentGpsOrigin = Boolean(locFrom && locFrom.type === 'CURRENT_GPS_LOCATION');
+  // Ride-hailing is a product-level "off" (no provider integration): nothing below is generated or priced
+  // unless the development-only switch is set. See rideHailing.js.
+  const rideHailingEnabled = isLegacyRideHailingEnabled();
 
   // OpenStreetMap Transit Infrastructure Discovery (Permitted Open Data ODbL)
   if (locFrom && Number.isFinite(locFrom.latitude)) {
@@ -577,7 +582,7 @@ export async function findMultiModalRoutes(fromCity, toCity, date, timeStr, pass
       }]
     });
 
-    if (isCurrentGpsOrigin) {
+    if (isCurrentGpsOrigin && rideHailingEnabled) {
       candidateRoutes.push(...createGpsRideOptions(locFrom.name, locTo.name, directDist));
     }
 
@@ -975,12 +980,12 @@ export async function findMultiModalRoutes(fromCity, toCity, date, timeStr, pass
   }
 
   // GPS Direct ride options (Uber & Rapido) ONLY when From is explicitly Current GPS Location
-  if (isCurrentGpsOrigin && directDist <= 85.0) {
+  if (isCurrentGpsOrigin && rideHailingEnabled && directDist <= 85.0) {
     candidateRoutes.push(...createGpsRideOptions(locFrom.name, locTo.name, directDist));
   }
 
-  // Feeder connections with Uber / Rapido from Current GPS Location (Requirement 2)
-  if (isCurrentGpsOrigin) {
+  // Feeder connections with Uber / Rapido from Current GPS Location (development-only; off by default)
+  if (isCurrentGpsOrigin && rideHailingEnabled) {
     const primaryStation = startStations[0];
     if (primaryStation) {
       const distToStation = getDistance(locFrom.latitude, locFrom.longitude, primaryStation.latitude, primaryStation.longitude);
@@ -1000,8 +1005,7 @@ export async function findMultiModalRoutes(fromCity, toCity, date, timeStr, pass
               to: primaryStation.name,
               durationMinutes: uberDur,
               distanceKm: Math.round(distToStation * 10) / 10,
-              price: uberPrice,
-              availabilityStatus: 'Available'
+              price: uberPrice
             };
             const segs = [uberLeg, trainLeg, destLeg].filter(Boolean);
             candidateRoutes.push({
@@ -1041,8 +1045,7 @@ export async function findMultiModalRoutes(fromCity, toCity, date, timeStr, pass
               to: primaryBusHub.name,
               durationMinutes: rapidoDur,
               distanceKm: Math.round(distToBus * 10) / 10,
-              price: rapidoPrice,
-              availabilityStatus: 'Available'
+              price: rapidoPrice
             };
             const segs = [rapidoLeg, busLeg, destLeg].filter(Boolean);
             candidateRoutes.push({
@@ -1128,12 +1131,18 @@ export async function findMultiModalRoutes(fromCity, toCity, date, timeStr, pass
 
   let uniqueRoutes = Array.from(backboneMap.values());
 
+  // Estimated ride-hailing options (Uber/Rapido) are formula-based, not provider-backed. They never take part
+  // in trusted comparisons (outlier pruning, fastest / budget / best tagging) and are listed after the
+  // timetable-backed routes. Without ride-hailing options this is identical to ranking every route.
+  const trustedRoutes = () => uniqueRoutes.filter(r => !isRideHailingRoute(r));
+
   // 9. Prune inferior detour outliers when direct options exist
-  if (uniqueRoutes.length > 0) {
-    const minDur = Math.min(...uniqueRoutes.map(r => r.totalDurationMinutes));
-    const minPrice = Math.min(...uniqueRoutes.map(r => r.totalPrice));
+  if (trustedRoutes().length > 0) {
+    const minDur = Math.min(...trustedRoutes().map(r => r.totalDurationMinutes));
+    const minPrice = Math.min(...trustedRoutes().map(r => r.totalPrice));
 
     uniqueRoutes = uniqueRoutes.filter(r => {
+      if (isRideHailingRoute(r)) return true;
       if (r.totalDurationMinutes > minDur * 2.2 && r.totalPrice > minPrice * 2.0) {
         return false;
       }
@@ -1141,14 +1150,15 @@ export async function findMultiModalRoutes(fromCity, toCity, date, timeStr, pass
     });
   }
 
-  // 10. Scoring & Tagging
-  if (uniqueRoutes.length > 0) {
-    let minPrice = Math.min(...uniqueRoutes.map(r => r.totalPrice));
-    let minDur = Math.min(...uniqueRoutes.map(r => r.totalDurationMinutes));
-    let maxPrice = Math.max(...uniqueRoutes.map(r => r.totalPrice));
-    let maxDur = Math.max(...uniqueRoutes.map(r => r.totalDurationMinutes));
+  // 10. Scoring & Tagging (trusted routes only)
+  const rankable = trustedRoutes();
+  if (rankable.length > 0) {
+    let minPrice = Math.min(...rankable.map(r => r.totalPrice));
+    let minDur = Math.min(...rankable.map(r => r.totalDurationMinutes));
+    let maxPrice = Math.max(...rankable.map(r => r.totalPrice));
+    let maxDur = Math.max(...rankable.map(r => r.totalDurationMinutes));
 
-    for (const r of uniqueRoutes) {
+    for (const r of rankable) {
       r.isFastest = (r.totalDurationMinutes === minDur);
       r.isBudget = (r.totalPrice === minPrice);
 
@@ -1162,14 +1172,27 @@ export async function findMultiModalRoutes(fromCity, toCity, date, timeStr, pass
       }
     }
 
-    const nonTagged = uniqueRoutes.filter(r => !r.tag).sort((a, b) => (a.score || 0) - (b.score || 0));
+    const nonTagged = rankable.filter(r => !r.tag).sort((a, b) => (a.score || 0) - (b.score || 0));
     if (nonTagged[0]) {
       nonTagged[0].tag = 'best';
     }
   }
 
+  // Estimated ride-hailing routes never carry trusted ranking tags, even when no timetable route exists.
+  for (const r of uniqueRoutes) {
+    if (isRideHailingRoute(r)) {
+      r.tag = null;
+      r.isFastest = false;
+      r.isBudget = false;
+    }
+  }
+
   // 11. Prioritize distinct optimum routes: fastest first, budget second, best third, followed by diverse modes
+  //     (estimated ride-hailing always after timetable-backed routes)
   uniqueRoutes.sort((a, b) => {
+    const aRide = isRideHailingRoute(a);
+    const bRide = isRideHailingRoute(b);
+    if (aRide !== bRide) return aRide ? 1 : -1;
     const order = { fastest: 1, budget: 2, best: 3 };
     const aOrder = order[a.tag] || 4;
     const bOrder = order[b.tag] || 4;
@@ -1177,11 +1200,19 @@ export async function findMultiModalRoutes(fromCity, toCity, date, timeStr, pass
     return a.totalDurationMinutes - b.totalDurationMinutes;
   });
 
-  // Limit to at most 6-8 distinct, optimum routes
-  const topOptimumRoutes = uniqueRoutes.slice(0, 8);
+  // Limit to at most 6-8 distinct, optimum routes. For GPS origins the standalone ride-hailing estimates are
+  // always kept (they are the only door-to-door option) but placed AFTER the timetable-backed routes, never
+  // promoted above them.
+  const isStandaloneRide = r => r.segments.length === 1 && isRideHailingRoute(r);
+  const selectedRoutes = isCurrentGpsOrigin
+    ? [
+        ...uniqueRoutes.filter(r => !isStandaloneRide(r)).slice(0, 7),
+        ...uniqueRoutes.filter(isStandaloneRide)
+      ]
+    : uniqueRoutes.slice(0, 8);
 
-  // 12. Final Clean Route Numbering (Route 1 – ..., Route 2 – ..., Route 3 – ...)
-  const formattedRoutes = topOptimumRoutes.map((r, rIdx) => {
+  // 12. Final Clean Route Numbering (Route 1 – ..., Route 2 – ..., Route 3 – ...), in display order
+  const finalRoutes = selectedRoutes.map((r, rIdx) => {
     let title = (r.routeName || 'Multi-Modal Route').replace(/^Route\s+\d+\s*–\s*/i, '');
     title = `Route ${rIdx + 1} – ${title}`;
     return {
@@ -1189,13 +1220,6 @@ export async function findMultiModalRoutes(fromCity, toCity, date, timeStr, pass
       routeName: title
     };
   });
-
-  const finalRoutes = isCurrentGpsOrigin
-    ? [
-        ...formattedRoutes.filter(r => r.segments.length === 1 && (r.segments[0].mode === 'uber' || r.segments[0].mode === 'rapido')),
-        ...formattedRoutes.filter(r => !(r.segments.length === 1 && (r.segments[0].mode === 'uber' || r.segments[0].mode === 'rapido'))).slice(0, 7)
-      ]
-    : formattedRoutes.slice(0, 8);
 
   return finalRoutes;
 }

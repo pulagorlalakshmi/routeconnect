@@ -4,17 +4,27 @@ import { useAuth } from '../context/AuthContext';
 import Navbar from '../components/Navbar';
 import SearchCard from '../components/SearchCard';
 import RouteBuddyMapBackground from '../components/RouteBuddyMapBackground';
+import { nowLocalHHMM, todayLocalIso } from '../utils/dateTime';
+
+interface Coordinates {
+  lat: number;
+  lng: number;
+}
+
+const CURRENT_LOCATION_PATTERN = /^(?:📍\s*)?(?:my\s+)?current\s*location$/i;
 
 export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const [gpsOrigin, setGpsOrigin] = useState<{ latitude: number; longitude: number } | null>(null);
+  // Coordinates are only known when a place was picked from the list/map or GPS was used; typed names are
+  // resolved against the timetable stops by the server.
+  const [fromCoords, setFromCoords] = useState<Coordinates | null>(null);
+  const [toCoords, setToCoords] = useState<Coordinates | null>(null);
   const [validationError, setValidationError] = useState('');
-  const [date, setDate] = useState(() => {
-    return new Date().toISOString().split('T')[0];
-  });
+  const [date, setDate] = useState(() => todayLocalIso());
+  const [time, setTime] = useState(() => nowLocalHHMM());
 
   const handleSearch = async () => {
     if (!from || !to) {
@@ -25,11 +35,15 @@ export default function Dashboard() {
       setValidationError('Your starting point and destination are the same. Choose two different places.');
       return;
     }
+    if (!date || !time) {
+      setValidationError('Choose a date and a departure time.');
+      return;
+    }
 
     setValidationError('');
 
-    let originCoordinates = gpsOrigin;
-    if (!originCoordinates && /^(?:📍\s*)?(?:my\s+)?current location$/i.test(from.trim())) {
+    let originCoordinates = fromCoords;
+    if (!originCoordinates && CURRENT_LOCATION_PATTERN.test(from.trim())) {
       if (!navigator.geolocation) {
         setValidationError('Geolocation is not supported by your browser. Enter a starting place instead.');
         return;
@@ -38,10 +52,7 @@ export default function Dashboard() {
         const position = await new Promise<GeolocationPosition>((resolve, reject) => {
           navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 });
         });
-        originCoordinates = {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude
-        };
+        originCoordinates = { lat: position.coords.latitude, lng: position.coords.longitude };
       } catch (error) {
         const locationError = error as GeolocationPositionError;
         setValidationError(locationError.code === locationError.PERMISSION_DENIED
@@ -51,52 +62,58 @@ export default function Dashboard() {
       }
     }
 
-    // Save search parameter logs to localStorage under my_trips
+    // Remember the search in the browser (My Trips)
     try {
       const savedTrips = JSON.parse(localStorage.getItem('my_trips') || '[]');
-      const newTrip = { from: from.trim(), to: to.trim(), date, id: Date.now() };
-      const isDup = savedTrips.some((t: any) => 
-        t.from.toLowerCase() === from.trim().toLowerCase() && 
-        t.to.toLowerCase() === to.trim().toLowerCase() && 
-        t.date === date
+      const isDup = savedTrips.some((t: { from: string; to: string; date: string; time?: string }) =>
+        t.from.toLowerCase() === from.trim().toLowerCase() &&
+        t.to.toLowerCase() === to.trim().toLowerCase() &&
+        t.date === date && t.time === time
       );
       if (!isDup) {
-        savedTrips.unshift(newTrip);
+        savedTrips.unshift({ from: from.trim(), to: to.trim(), date, time, id: Date.now() });
         localStorage.setItem('my_trips', JSON.stringify(savedTrips));
       }
     } catch (e) {
       console.error('Failed to save to localStorage:', e);
     }
 
-    // Navigate to Search Results page with parameters
     const params = new URLSearchParams({
-      from: originCoordinates ? '📍 Current Location' : from.trim(),
+      from: originCoordinates && CURRENT_LOCATION_PATTERN.test(from.trim()) ? '📍 Current Location' : from.trim(),
       to: to.trim(),
-      date
+      date,
+      time
     });
     if (originCoordinates) {
-      params.set('origin', 'gps');
-      params.set('fromLat', String(originCoordinates.latitude));
-      params.set('fromLng', String(originCoordinates.longitude));
+      params.set('fromLat', String(originCoordinates.lat));
+      params.set('fromLng', String(originCoordinates.lng));
+    }
+    if (toCoords) {
+      params.set('toLat', String(toCoords.lat));
+      params.set('toLng', String(toCoords.lng));
     }
     navigate(`/search-results?${params.toString()}`);
   };
 
   const handleFromChange = (value: string) => {
     setFrom(value);
-    if (!/^(?:📍\s*)?(?:my\s+)?current\s*location$/i.test(value.trim())) {
-      setGpsOrigin(null);
-    }
+    // Editing the text invalidates coordinates picked earlier (unless it is still "current location").
+    if (!CURRENT_LOCATION_PATTERN.test(value.trim())) setFromCoords(null);
+  };
+
+  const handleToChange = (value: string) => {
+    setTo(value);
+    setToCoords(null);
   };
 
   const handleSwap = () => {
-    const temp = from;
     setFrom(to);
-    setTo(temp);
-    setGpsOrigin(null);
+    setTo(from);
+    setFromCoords(toCoords);
+    setToCoords(fromCoords);
   };
 
-  const isValid = from.trim().length > 0 && to.trim().length > 0 && from.trim().toLowerCase() !== to.trim().toLowerCase();
+  const isValid = from.trim().length > 0 && to.trim().length > 0 && from.trim().toLowerCase() !== to.trim().toLowerCase() && Boolean(date) && Boolean(time);
 
   return (
     <div className="route-buddy-dashboard min-h-screen text-[#1F2933] flex flex-col">
@@ -106,7 +123,7 @@ export default function Dashboard() {
       <main className="relative z-10 flex-1 w-full max-w-7xl mx-auto px-4 py-12 md:py-20 flex flex-col justify-center space-y-8">
         <div className="text-center space-y-4 max-w-2xl mx-auto mb-4">
           <p className="text-xs uppercase tracking-[0.2em] font-extrabold text-[#146B5B]">
-            {user ? `Welcome back, ${user.name}` : 'Multi-Modal Route Planner'}
+            {user ? `Welcome back, ${user.name}` : 'Public Transport Route Planner'}
           </p>
           <h1 className="text-2xl md:text-3xl font-extrabold text-[#1F2933] tracking-tight">
             Plan your next journey
@@ -119,10 +136,14 @@ export default function Dashboard() {
             from={from}
             to={to}
             date={date}
+            time={time}
             onFromChange={handleFromChange}
-            onCurrentLocation={(latitude, longitude) => setGpsOrigin({ latitude, longitude })}
-            onToChange={setTo}
+            onCurrentLocation={(lat, lng) => setFromCoords({ lat, lng })}
+            onFromCoordinates={(lat, lng) => setFromCoords({ lat, lng })}
+            onToChange={handleToChange}
+            onToCoordinates={(lat, lng) => setToCoords({ lat, lng })}
             onDateChange={setDate}
+            onTimeChange={setTime}
             onSwapLocations={handleSwap}
             onSearch={handleSearch}
             loading={false}

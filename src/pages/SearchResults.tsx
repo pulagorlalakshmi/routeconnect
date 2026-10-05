@@ -1,315 +1,170 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
-import RouteCard from '../components/RouteCard';
+import JourneyCard from '../components/JourneyCard';
 import LoadingState from '../components/LoadingState';
-import { searchMultiModalRoutes, FlightSearchInfo, RouteInsights, RouteResult } from '../services/routeService';
+import { fetchPlan, PlanError } from '../services/planService';
+import type { Journey, PlanResponse } from '../services/planService';
+import { addMinutes, clockOf, dateOf, formatDateLabel, nowLocalHHMM, todayLocalIso } from '../utils/dateTime';
 import { SlidersHorizontal, ArrowUpDown, X, Filter, ChevronLeft } from 'lucide-react';
 
+// Rural services are sparse, so look several hours ahead of the requested time.
+const WINDOW_MINUTES = 360;
+
+type SortKey = 'recommended' | 'earliest' | 'arrival' | 'fastest' | 'transfers';
+
+const SORT_OPTIONS: { id: SortKey; label: string }[] = [
+  { id: 'recommended', label: '⭐ Recommended' },
+  { id: 'earliest', label: '🌅 Earliest departure' },
+  { id: 'arrival', label: '🏁 Earliest arrival' },
+  { id: 'fastest', label: '⚡ Shortest duration' },
+  { id: 'transfers', label: '🔄 Fewest transfers' }
+];
+
+const NOTICE_HIDDEN = new Set(['SEARCH_DATE_OUTSIDE_FEED_VALIDITY', 'FEED_EXPIRED', 'NO_JOURNEY_FOUND']);
+
+const finiteOrNull = (text: string | null) => {
+  if (text === null || text.trim() === '') return null;
+  const value = Number(text);
+  return Number.isFinite(value) ? value : null;
+};
+
+const departureSlot = (journey: Journey): 'morning' | 'afternoon' | 'evening' | 'night' => {
+  const hour = Number(clockOf(journey.departureTime).slice(0, 2));
+  if (hour >= 6 && hour < 12) return 'morning';
+  if (hour >= 12 && hour < 17) return 'afternoon';
+  if (hour >= 17 && hour < 21) return 'evening';
+  return 'night';
+};
+
+const labelWeight = (journey: Journey) => {
+  if (journey.labels.includes('BEST_BALANCED')) return -100;
+  if (journey.labels.includes('FASTEST')) return -70;
+  if (journey.labels.includes('LEAST_TRANSFERS')) return -50;
+  return 0;
+};
+
 export default function SearchResults() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  
+
   const from = searchParams.get('from') || '';
   const to = searchParams.get('to') || '';
-  const date = searchParams.get('date') || '';
-  const isExplicitCurrentLocation = /^(?:📍\s*)?(?:my\s+)?current\s+location$/i.test(from.trim());
-  const originLatitude = Number(searchParams.get('fromLat'));
-  const originLongitude = Number(searchParams.get('fromLng'));
-  const hasGpsOrigin = isExplicitCurrentLocation && searchParams.get('origin') === 'gps'
-    && Number.isFinite(originLatitude) && originLatitude >= -90 && originLatitude <= 90
-    && Number.isFinite(originLongitude) && originLongitude >= -180 && originLongitude <= 180;
+  const date = searchParams.get('date') || todayLocalIso();
+  const time = searchParams.get('time') || nowLocalHHMM();
+  const fromLat = finiteOrNull(searchParams.get('fromLat'));
+  const fromLng = finiteOrNull(searchParams.get('fromLng'));
+  const toLat = finiteOrNull(searchParams.get('toLat'));
+  const toLng = finiteOrNull(searchParams.get('toLng'));
 
-  // Core planners state
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<PlanError | Error | null>(null);
   const [retryCount, setRetryCount] = useState(0);
-  const [allRoutes, setAllRoutes] = useState<RouteResult[]>([]);
-  const [routeInsights, setRouteInsights] = useState<RouteInsights | null>(null);
-  const [flightSearch, setFlightSearch] = useState<FlightSearchInfo | null>(null);
+  const [plan, setPlan] = useState<PlanResponse | null>(null);
   const [showFilterPanel, setShowFilterPanel] = useState(false);
   const [showSortDropdown, setShowSortDropdown] = useState(false);
 
-  // Filter settings state
-  const [sortBy, setSortBy] = useState<'recommended' | 'cheapest' | 'fastest' | 'transfers' | 'earliest' | 'latest'>('recommended');
-  const [maxPrice, setMaxPrice] = useState<number>(2000);
-  const [filterModes, setFilterModes] = useState({
-    train: true,
-    bus: true,
-    auto: true,
-    cab: true,
-    rapido: true,
-    uber: true,
-    walking: true,
-    flight: true,
-    airport_transfer: true
-  });
-  const [durations, setDurations] = useState({
-    under1: true,
-    hours1to2: true,
-    hours2to4: true,
-    over4: true
-  });
-  const [transfers, setTransfers] = useState({
-    trans0: true,
-    trans1: true,
-    trans2: true,
-    trans3plus: true
-  });
-  const [departureTimes, setDepartureTimes] = useState({
-    morning: true,
-    afternoon: true,
-    evening: true,
-    night: true
-  });
-  const [routeTypes, setRouteTypes] = useState({
-    direct: true,
-    multimodal: true
-  });
-  const [busTypes, setBusTypes] = useState({
-    express: true,
-    palleVelugu: true,
-    deluxe: true,
-    superLuxury: true,
-    other: true
-  });
-
-  const busTypeOptions = [
-    { id: 'express', label: 'Express' },
-    { id: 'palleVelugu', label: 'Palle Velugu' },
-    { id: 'deluxe', label: 'Deluxe' },
-    { id: 'superLuxury', label: 'Super Luxury' },
-    { id: 'other', label: 'Other available bus types' }
-  ] as const;
+  const [sortBy, setSortBy] = useState<SortKey>('recommended');
+  const [transfers, setTransfers] = useState({ trans0: true, trans1: true, trans2: true, trans3plus: true });
+  const [departureTimes, setDepartureTimes] = useState({ morning: true, afternoon: true, evening: true, night: true });
+  const [durations, setDurations] = useState({ under2: true, hours2to4: true, hours4to8: true, over8: true });
 
   useEffect(() => {
-    if (!from || !to) {
+    const hasFrom = from.trim() !== '' || (fromLat !== null && fromLng !== null);
+    const hasTo = to.trim() !== '' || (toLat !== null && toLng !== null);
+    if (!hasFrom || !hasTo) {
       navigate('/dashboard');
       return;
     }
 
-    async function fetchRoutes() {
-      setLoading(true);
-      setError('');
-      try {
-        const plannerResponse = await searchMultiModalRoutes(
-          from,
-          to,
-          date,
-          1,
-          hasGpsOrigin ? { latitude: originLatitude, longitude: originLongitude } : undefined
-        );
-        const results = plannerResponse.routes;
-        setRouteInsights(plannerResponse.insights);
-        setFlightSearch(plannerResponse.flightSearch);
-        const isCurrentGpsOrigin = hasGpsOrigin && plannerResponse.originType === 'CURRENT_GPS_LOCATION';
-        const displayRoutes = results.filter(route => {
-          const rideSegments = route.segments.filter(segment => segment.mode === 'uber' || segment.mode === 'rapido');
-          return isCurrentGpsOrigin || rideSegments.length === 0;
-        });
-        setAllRoutes(displayRoutes);
-        if (displayRoutes.length > 0) {
-          const localCurrencyPrices = displayRoutes
-            .filter(route => !route.currency || route.currency === 'INR')
-            .map(route => route.totalPrice);
-          const highestPrice = localCurrencyPrices.length > 0 ? Math.max(...localCurrencyPrices) : 2000;
-          setMaxPrice(highestPrice > 2000 ? highestPrice : 2000);
-        } else {
-          setError('No travel routes found matching these parameters.');
-        }
-      } catch (err) {
-        console.error(err);
-        setError('Failed to fetch travel routes. Please verify that your backend server is running.');
-      } finally {
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+    fetchPlan({
+      from,
+      to,
+      fromCoords: fromLat !== null && fromLng !== null ? { lat: fromLat, lng: fromLng } : null,
+      toCoords: toLat !== null && toLng !== null ? { lat: toLat, lng: toLng } : null,
+      date,
+      time,
+      windowMinutes: WINDOW_MINUTES
+    }, controller.signal)
+      .then(response => {
+        setPlan(response);
         setLoading(false);
-      }
-    }
-
-    fetchRoutes();
-  }, [from, to, date, navigate, retryCount, hasGpsOrigin, originLatitude, originLongitude]);
+      })
+      .catch(err => {
+        if ((err as Error).name === 'AbortError') return;
+        setPlan(null);
+        setError(err as Error);
+        setLoading(false);
+      });
+    return () => controller.abort();
+  }, [from, to, date, time, fromLat, fromLng, toLat, toLng, retryCount, navigate]);
 
   const handleClearFilters = () => {
-    setFilterModes({
-      train: true,
-      bus: true,
-      auto: true,
-      cab: true,
-      rapido: true,
-      uber: true,
-      walking: true,
-      flight: true,
-      airport_transfer: true
-    });
-    setDurations({ under1: true, hours1to2: true, hours2to4: true, over4: true });
     setTransfers({ trans0: true, trans1: true, trans2: true, trans3plus: true });
     setDepartureTimes({ morning: true, afternoon: true, evening: true, night: true });
-    setRouteTypes({ direct: true, multimodal: true });
-    setBusTypes({ express: true, palleVelugu: true, deluxe: true, superLuxury: true, other: true });
-    if (allRoutes.length > 0) {
-      const localCurrencyPrices = allRoutes
-        .filter(route => !route.currency || route.currency === 'INR')
-        .map(route => route.totalPrice);
-      const highestPrice = localCurrencyPrices.length > 0 ? Math.max(...localCurrencyPrices) : 2000;
-      setMaxPrice(highestPrice > 2000 ? highestPrice : 2000);
-    } else {
-      setMaxPrice(2000);
-    }
+    setDurations({ under2: true, hours2to4: true, hours4to8: true, over8: true });
   };
 
-  // Filter & sort calculations
-  const filteredAndSortedRoutes = useMemo(() => {
-    let result = [...allRoutes];
+  const visibleJourneys = useMemo(() => {
+    let result = [...(plan?.journeys ?? [])];
 
-    // 0. Walking distance rule: If pure walking distance > 2.0 km or access leg > 2.5 km, do not display
-    result = result.filter(r => {
-      const isPureWalking = r.segments.length === 1 && r.segments[0].mode === 'walking';
-      if (isPureWalking && r.segments[0].distanceKm > 2.0) return false;
-      if (r.segments.some(seg => seg.mode === 'walking' && seg.distanceKm > 2.5)) return false;
-      return true;
-    });
-
-    // 1. Price budget
-    result = result.filter(r => r.priceIsPartial || (r.currency && r.currency !== 'INR') || r.totalPrice <= maxPrice);
-
-    // 2. Modes filter
-    result = result.filter(r =>
-      r.segments.every(seg => filterModes[seg.mode as keyof typeof filterModes])
-    );
-
-    // Bus type filter applies to every bus leg in a journey.
-    result = result.filter(r => r.segments.every(seg => {
-      if (seg.mode !== 'bus') return true;
-      const busType = (seg.busType || seg.serviceName || '').toLowerCase();
-      if (busType.includes('express')) return busTypes.express;
-      if (busType.includes('palle velugu')) return busTypes.palleVelugu;
-      if (busType.includes('super luxury')) return busTypes.superLuxury;
-      if (busType.includes('deluxe')) return busTypes.deluxe;
-      return busTypes.other;
-    }));
-
-    // 3. Durations
-    result = result.filter(r => {
-      const mins = r.totalDurationMinutes;
-      if (mins < 60) return durations.under1;
-      if (mins >= 60 && mins <= 120) return durations.hours1to2;
-      if (mins > 120 && mins <= 240) return durations.hours2to4;
-      return durations.over4;
-    });
-
-    // 4. Transfers
-    result = result.filter(r => {
-      const t = r.totalTransfers;
+    result = result.filter(journey => {
+      const t = journey.transfers;
       if (t === 0) return transfers.trans0;
       if (t === 1) return transfers.trans1;
       if (t === 2) return transfers.trans2;
       return transfers.trans3plus;
     });
 
-    // 5. Route Types
-    result = result.filter(r => {
-      const isDirect = r.totalTransfers === 0;
-      if (isDirect) return routeTypes.direct;
-      return routeTypes.multimodal;
+    result = result.filter(journey => departureTimes[departureSlot(journey)]);
+
+    result = result.filter(journey => {
+      const hours = journey.totalDurationSeconds / 3600;
+      if (hours < 2) return durations.under2;
+      if (hours < 4) return durations.hours2to4;
+      if (hours < 8) return durations.hours4to8;
+      return durations.over8;
     });
 
-    // 6. Departure slots
-    result = result.filter(r => {
-      const depStr = r.departureTimeRaw || (r.segments.find(s => s.departure)?.departure);
-      if (!depStr) return true;
-      let hour: number;
-      if (depStr.includes(':')) {
-        const parts = depStr.split(':');
-        hour = parseInt(parts[0], 10);
-        if (depStr.toLowerCase().includes('pm') && hour < 12) hour += 12;
-        if (depStr.toLowerCase().includes('am') && hour === 12) hour = 0;
-      } else {
-        const parsed = new Date(depStr);
-        hour = parsed.getHours();
-      }
-      if (Number.isNaN(hour)) return true;
-      if (hour >= 6 && hour < 12) return departureTimes.morning;
-      if (hour >= 12 && hour < 17) return departureTimes.afternoon;
-      if (hour >= 17 && hour < 21) return departureTimes.evening;
-      return departureTimes.night;
-    });
-
-    // 7. Sort implementation
+    const byDeparture = (a: Journey, b: Journey) => a.departureTime.localeCompare(b.departureTime) || a.arrivalTime.localeCompare(b.arrivalTime);
     result.sort((a, b) => {
-      if (sortBy === 'cheapest') {
-        if (a.currency && b.currency && a.currency !== b.currency) return 0;
-        return a.totalPrice - b.totalPrice;
-      }
-      if (sortBy === 'fastest') return a.totalDurationMinutes - b.totalDurationMinutes;
-      if (sortBy === 'transfers') return a.totalTransfers - b.totalTransfers;
-
-      if (sortBy === 'earliest') {
-        const depA = a.departureTimeRaw || a.segments.find(s => s.departure)?.departure || '23:59';
-        const depB = b.departureTimeRaw || b.segments.find(s => s.departure)?.departure || '23:59';
-        return depA.localeCompare(depB);
-      }
-
-      if (sortBy === 'latest') {
-        const arrA = a.arrivalTimeRaw || [...a.segments].reverse().find(s => s.arrival)?.arrival || '00:00';
-        const arrB = b.arrivalTimeRaw || [...b.segments].reverse().find(s => s.arrival)?.arrival || '00:00';
-        return arrB.localeCompare(arrA);
-      }
-
-      // Default: recommended tagging score rank
-      const getTagWeight = (r: RouteResult) => {
-        if (r.tag === 'best') return -100;
-        if (r.tag === 'fastest') return -70;
-        if (r.tag === 'budget' || r.tag === 'cheapest') return -50;
-        return 0;
-      };
-      return getTagWeight(a) - getTagWeight(b);
+      if (sortBy === 'earliest') return byDeparture(a, b);
+      if (sortBy === 'arrival') return a.arrivalTime.localeCompare(b.arrivalTime) || byDeparture(a, b);
+      if (sortBy === 'fastest') return a.totalDurationSeconds - b.totalDurationSeconds || byDeparture(a, b);
+      if (sortBy === 'transfers') return a.transfers - b.transfers || byDeparture(a, b);
+      return labelWeight(a) - labelWeight(b) || byDeparture(a, b);
     });
-
     return result;
-  }, [allRoutes, sortBy, maxPrice, filterModes, busTypes, durations, transfers, departureTimes, routeTypes]);
+  }, [plan, sortBy, transfers, departureTimes, durations]);
 
-  // Requirement: The route which is having less time is fastest, the route having lowest cost is budget route
-  const { minDuration, minCost } = useMemo(() => {
-    if (filteredAndSortedRoutes.length === 0) {
-      return { minDuration: null, minCost: null };
-    }
-    const durations = filteredAndSortedRoutes.map(r => r.totalDurationMinutes);
-    const costs = filteredAndSortedRoutes.map(r => r.totalPrice);
-    return {
-      minDuration: Math.min(...durations),
-      minCost: Math.min(...costs)
-    };
-  }, [filteredAndSortedRoutes]);
+  const fromLabel = plan?.resolved?.from?.name ?? from;
+  const toLabel = plan?.resolved?.to?.name ?? to;
 
-  // Formats date nicely
-  const formatDateLabel = (dateStr: string) => {
-    if (!dateStr) return '';
-    const parsed = new Date(dateStr);
-    if (isNaN(parsed.getTime())) return dateStr;
-    return parsed.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+  // Move the search to just after the last departure shown, to look further ahead.
+  const showLaterDepartures = () => {
+    if (!plan || plan.journeys.length === 0) return;
+    const latest = plan.journeys.reduce((a, b) => (a.departureTime > b.departureTime ? a : b)).departureTime;
+    const next = addMinutes(dateOf(latest), clockOf(latest), 1);
+    const params = new URLSearchParams(searchParams);
+    params.set('date', next.date);
+    params.set('time', next.time);
+    setSearchParams(params);
   };
 
-  const formatDuration = (mins: number) => {
-    const hours = Math.floor(mins / 60);
-    const minutes = mins % 60;
-    return `${hours > 0 ? `${hours}h ` : ''}${minutes}m`;
-  };
+  const noticeWarnings = (plan?.warnings ?? []).filter(w => w.severity === 'warning' && !NOTICE_HIDDEN.has(w.code) && !w.code.startsWith('NO_STOPS'));
+  const infoWarnings = (plan?.warnings ?? []).filter(w => w.severity === 'info');
+  const noStopReasons = (plan?.warnings ?? []).filter(w => w.code.startsWith('NO_STOPS'));
 
-  const formatPrice = (price: number, currency?: string | null) => new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency: currency || 'INR',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0
-  }).format(price);
-
-
+  const checkbox = 'w-4 h-4 rounded text-[#146B5B] border-[#D9DED9] focus:ring-[#146B5B]';
 
   return (
     <div className="min-h-screen bg-[#F1F4F3] text-[#1F2933] flex flex-col">
       <Navbar />
 
       <main className="flex-1 w-full max-w-4xl mx-auto px-4 py-8 space-y-6">
-        
-        {/* Back Link to Dashboard */}
         <button
           onClick={() => navigate('/dashboard')}
           className="inline-flex items-center gap-1 text-xs font-black uppercase text-[#146B5B] hover:text-[#0f5447] transition mb-2"
@@ -317,19 +172,16 @@ export default function SearchResults() {
           <ChevronLeft className="h-4 w-4" /> Back to Search
         </button>
 
-        {/* Route metadata header card */}
+        {/* Search summary */}
         <div className="bg-white border border-[#D9DED9] p-5 md:p-6 rounded-xl shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-black text-[#1F2933]">
-              {from} ➔ {to}
-            </h1>
+            <h1 className="text-2xl font-black text-[#1F2933]">{fromLabel} ➔ {toLabel}</h1>
             <p className="text-sm font-semibold text-[#667085] mt-1">
-              📅 {formatDateLabel(date)}
+              📅 {formatDateLabel(date)} · 🕒 Departing after {time}
             </p>
           </div>
 
-          {/* Action buttons: Filter & Sort */}
-          {!loading && !error && (
+          {!loading && !error && plan && plan.journeys.length > 0 && (
             <div className="flex items-center gap-2.5 self-start md:self-center">
               <button
                 onClick={() => setShowFilterPanel(true)}
@@ -347,26 +199,15 @@ export default function SearchResults() {
                   <ArrowUpDown className="h-4 w-4 text-[#146B5B]" />
                   <span>Sort</span>
                 </button>
-
                 {showSortDropdown && (
-                  <div className="absolute right-0 mt-2 w-48 rounded-xl bg-white shadow-lg border border-[#D9DED9] z-35 overflow-hidden">
-                    {[
-                      { id: 'recommended', label: '⭐ Recommended' },
-                      { id: 'cheapest', label: '💰 Budget Route' },
-                      { id: 'fastest', label: '⚡ Fastest' },
-                      { id: 'transfers', label: '🔄 Fewest Transfers' },
-                      { id: 'earliest', label: '🌅 Earliest Departure' },
-                      { id: 'latest', label: '🌙 Latest Arrival' }
-                    ].map(opt => (
+                  <div className="absolute right-0 mt-2 w-52 rounded-xl bg-white shadow-lg border border-[#D9DED9] z-30 overflow-hidden">
+                    {SORT_OPTIONS.map(option => (
                       <button
-                        key={opt.id}
-                        onClick={() => {
-                          setSortBy(opt.id as any);
-                          setShowSortDropdown(false);
-                        }}
-                        className={`w-full text-left px-4 py-2.5 text-xs font-bold transition hover:bg-gray-50 ${sortBy === opt.id ? 'bg-[#F4F2ED] text-[#146B5B]' : 'text-[#1F2933]'}`}
+                        key={option.id}
+                        onClick={() => { setSortBy(option.id); setShowSortDropdown(false); }}
+                        className={`w-full text-left px-4 py-2.5 text-xs font-bold transition hover:bg-gray-50 ${sortBy === option.id ? 'bg-[#F4F2ED] text-[#146B5B]' : 'text-[#1F2933]'}`}
                       >
-                        {opt.label}
+                        {option.label}
                       </button>
                     ))}
                   </div>
@@ -376,23 +217,34 @@ export default function SearchResults() {
           )}
         </div>
 
-        {loading && <LoadingState label="Analyzing schedules and compiling optimal travel options..." />}
+        {loading && <LoadingState label="Searching published bus timetables..." />}
 
+        {/* Errors */}
         {!loading && error && (
           <div className="bg-white border border-[#D9DED9] rounded-xl p-10 text-center">
-            <p className="text-xs uppercase tracking-widest font-extrabold text-red-700">Search unavailable</p>
-            <p className="mt-2 text-xl font-black text-[#1F2933]">{error}</p>
+            <p className="text-xs uppercase tracking-widest font-extrabold text-red-700">
+              {error instanceof PlanError && error.code === 'PLACE_NOT_FOUND' ? 'Place not found' : 'Search unavailable'}
+            </p>
+            <p className="mt-2 text-xl font-black text-[#1F2933]">
+              {error instanceof PlanError && error.code === 'PLACE_NOT_FOUND'
+                ? `We couldn't find “${error.query}” among the stops in the transit dataset.`
+                : error.message}
+            </p>
             <p className="mt-3 text-sm text-[#667085] leading-relaxed max-w-md mx-auto">
-              Your search is still here. Check the connection, then try again.
+              {error instanceof PlanError && error.code === 'PLACE_NOT_FOUND'
+                ? 'Choose a suggestion from the list while typing, or try a nearby town or bus stand.'
+                : 'Your search is still here. Check the connection, then try again.'}
             </p>
             <div className="mt-6 flex flex-col sm:flex-row justify-center gap-3">
-              <button
-                type="button"
-                onClick={() => setRetryCount(count => count + 1)}
-                className="rounded-lg bg-[#146B5B] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#0f5447] transition"
-              >
-                Try again
-              </button>
+              {!(error instanceof PlanError && error.code === 'PLACE_NOT_FOUND') && (
+                <button
+                  type="button"
+                  onClick={() => setRetryCount(count => count + 1)}
+                  className="rounded-lg bg-[#146B5B] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#0f5447] transition"
+                >
+                  Try again
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => navigate('/dashboard')}
@@ -404,32 +256,68 @@ export default function SearchResults() {
           </div>
         )}
 
-        {!loading && !error && (
-          <div className="space-y-6">
-            {/* Travel Options Section Header */}
+        {/* No timetable-supported route: nothing is substituted */}
+        {!loading && !error && plan && plan.journeys.length === 0 && (
+          <div className="bg-white border border-[#D9DED9] rounded-xl p-10 text-center" role="status">
+            <p className="text-xs uppercase tracking-widest font-extrabold text-[#146B5B]">No route found</p>
+            <p className="mt-2 text-xl font-black text-[#1F2933]">
+              {plan.message ?? 'No timetable-supported public-transport journey was found within the configured access range.'}
+            </p>
+            {noStopReasons.map(reason => (
+              <p key={reason.code} className="mt-3 text-sm text-[#667085]">{reason.message}</p>
+            ))}
+            <p className="mt-3 text-sm text-[#667085] leading-relaxed max-w-md mx-auto">
+              Walking and local-ride access to timetable stops were both considered. RouteConnect only shows journeys that include a published bus timetable. Try another date or time, or a nearby town or bus stand.
+            </p>
+            {plan.datasetWarning && (
+              <p className="mt-4 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 max-w-xl mx-auto">{plan.datasetWarning}</p>
+            )}
+            <button
+              type="button"
+              onClick={() => navigate('/dashboard')}
+              className="mt-6 rounded-lg bg-[#146B5B] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#0f5447] transition"
+            >
+              Change search
+            </button>
+          </div>
+        )}
+
+        {/* Results */}
+        {!loading && !error && plan && plan.journeys.length > 0 && (
+          <div className="space-y-5">
+            {plan.datasetWarning && (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900" role="alert">
+                ⚠ {plan.datasetWarning}
+              </div>
+            )}
+            {noticeWarnings.map(w => (
+              <div key={w.code} className="rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-sm font-semibold text-amber-900">
+                {w.message}
+              </div>
+            ))}
+            {plan.journeys.some(j => j.localRideCount > 0) && (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800" role="note">
+                🚕 Some options include an <strong>estimated local ride</strong> to or from a bus stop. No ride provider is connected, so availability is not verified, and ride time and fare are approximate.
+              </div>
+            )}
+
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-1">
               <div>
-                <h2 className="text-xl font-black text-[#1F2933]">
-                  Travel Options ({filteredAndSortedRoutes.length})
-                </h2>
+                <h2 className="text-xl font-black text-[#1F2933]">Bus options ({visibleJourneys.length})</h2>
                 <p className="text-xs text-[#667085] mt-0.5 font-medium">
-                  Showing available travel options one by one. Click "Show Details" for complete step-by-step navigation.
+                  From published timetables. Click "Show Details" for each stop and transfer.
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1 rounded-full flex items-center gap-1.5 shadow-2xs">
-                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                  Verified Schedules & Fares
-                </span>
-              </div>
+              <span className="text-xs font-bold text-slate-700 bg-slate-50 border border-slate-200 px-3 py-1 rounded-full flex items-center gap-1.5 shadow-2xs self-start">
+                <span className="h-2 w-2 rounded-full bg-slate-400"></span>
+                Schedule confidence is shown on every option
+              </span>
             </div>
 
-            {filteredAndSortedRoutes.length === 0 ? (
+            {visibleJourneys.length === 0 ? (
               <div className="bg-white border border-[#D9DED9] rounded-xl p-10 text-center">
-                <p className="text-lg font-black text-[#1F2933]">No matching travel options found</p>
-                <p className="mt-1 text-xs text-[#667085]">
-                  Click on "Display Options" to adjust your preferences or widen your schedule filters.
-                </p>
+                <p className="text-lg font-black text-[#1F2933]">No options match your filters</p>
+                <p className="mt-1 text-xs text-[#667085]">Open "Display Options" to widen the filters.</p>
                 <button
                   onClick={handleClearFilters}
                   className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-[#146B5B] px-4 py-2 text-xs font-bold text-white hover:bg-[#0f5447] transition"
@@ -438,226 +326,91 @@ export default function SearchResults() {
                 </button>
               </div>
             ) : (
-              /* Travel Options displayed ONE BY ONE down the page */
-              <div className="space-y-5" aria-label="Available Travel Options">
-                {filteredAndSortedRoutes.map((route, index) => {
-                  const isFastest = minDuration !== null && route.totalDurationMinutes === minDuration;
-                  const isBudget = minCost !== null && route.totalPrice === minCost;
-                  return (
-                    <div key={route.id} id={`route-${route.id}`}>
-                      <RouteCard
-                        route={route}
-                        routeIndex={index + 1}
-                        isFastest={isFastest}
-                        isBudget={isBudget}
-                      />
-                    </div>
-                  );
-                })}
+              <div className="space-y-5" aria-label="Journey options">
+                {visibleJourneys.map((journey, i) => (
+                  <JourneyCard key={journey.id} journey={journey} index={i + 1} from={fromLabel} to={toLabel} />
+                ))}
               </div>
             )}
+
+            <div className="flex justify-center">
+              <button
+                onClick={showLaterDepartures}
+                className="rounded-xl border border-[#D9DED9] bg-white px-5 py-2.5 text-xs font-extrabold text-[#146B5B] hover:bg-gray-50 transition"
+              >
+                Show later departures ➔
+              </button>
+            </div>
+
+            <details className="rounded-xl border border-[#D9DED9] bg-white px-4 py-3 text-xs text-[#667085]">
+              <summary className="cursor-pointer font-bold text-[#1F2933]">About this data</summary>
+              <ul className="mt-2 list-disc pl-5 space-y-1">
+                {infoWarnings.map(w => <li key={w.code}>{w.message}</li>)}
+                <li>Every option contains at least one bus from the timetable. A local ride only connects you to or from a bus stop; ride-only journeys and named ride-hailing services are never shown.</li>
+              </ul>
+            </details>
           </div>
         )}
       </main>
 
-      {/* FILTER DRAWER OVERLAY */}
+      {/* Filter drawer */}
       {showFilterPanel && (
         <div className="fixed inset-0 z-50 bg-[#1F2933]/55 backdrop-blur-sm flex justify-end items-end md:items-stretch animate-fadeIn">
           <div className="absolute inset-0" onClick={() => setShowFilterPanel(false)} />
-
           <div className="relative w-full md:max-w-md bg-white rounded-t-2xl md:rounded-t-none md:rounded-l-2xl shadow-xl p-6 overflow-y-auto flex flex-col max-h-[90vh] md:max-h-none z-10 animate-slideUp">
-            
-            {/* Header */}
             <div className="flex items-center justify-between border-b border-[#D9DED9] pb-4 mb-5">
               <div className="flex items-center gap-2 text-[#1F2933]">
                 <Filter className="h-5 w-5 text-[#146B5B]" />
                 <h3 className="text-base font-black">Display Options</h3>
               </div>
-              <button
-                onClick={() => setShowFilterPanel(false)}
-                className="p-2 hover:bg-gray-50 rounded-full transition"
-              >
+              <button onClick={() => setShowFilterPanel(false)} className="p-2 hover:bg-gray-50 rounded-full transition" aria-label="Close">
                 <X className="h-4.5 w-4.5 text-[#667085]" />
               </button>
             </div>
 
-            {/* Body */}
             <div className="space-y-6 flex-1 pr-1">
-              
-              {/* Route Types */}
-              <div className="space-y-2">
-                <h4 className="text-xs uppercase font-extrabold tracking-wider text-[#667085]">Route Type</h4>
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#1F2933]">
-                    <input
-                      type="checkbox"
-                      checked={routeTypes.direct}
-                      onChange={() => setRouteTypes(prev => ({ ...prev, direct: !prev.direct }))}
-                      className="w-4 h-4 rounded text-[#146B5B] border-[#D9DED9] focus:ring-[#146B5B]"
-                    />
-                    Direct Option
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#1F2933]">
-                    <input
-                      type="checkbox"
-                      checked={routeTypes.multimodal}
-                      onChange={() => setRouteTypes(prev => ({ ...prev, multimodal: !prev.multimodal }))}
-                      className="w-4 h-4 rounded text-[#146B5B] border-[#D9DED9] focus:ring-[#146B5B]"
-                    />
-                    Multi-Modal Option
-                  </label>
-                </div>
-              </div>
-
-              {/* Modes */}
-              <div className="space-y-2">
-                <h4 className="text-xs uppercase font-extrabold tracking-wider text-[#667085]">Transportation Type</h4>
-                <div className="grid grid-cols-2 gap-2">
-                  {[
-                    { id: 'train', label: ' Indian Railways (🚆)' },
-                    { id: 'bus', label: ' Bus Service (🚌)' },
-                    ...(hasGpsOrigin ? [
-                      { id: 'uber', label: ' Uber Cabs (🚗)' },
-                      { id: 'rapido', label: ' Rapido Bike (🛵)' }
-                    ] : []),
-                    { id: 'auto', label: ' Auto / Tuk-tuk (🛺)' },
-                    { id: 'cab', label: ' Taxi / Cab (🚕)' },
-                    { id: 'walking', label: ' Walking (🚶)' },
-                    { id: 'flight', label: ' Flight (✈️)' },
-                    { id: 'airport_transfer', label: ' Airport access (🚕)' }
-                  ].map(mode => (
-                    <label key={mode.id} className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#1F2933]">
-                      <input
-                        type="checkbox"
-                        checked={filterModes[mode.id as keyof typeof filterModes]}
-                        onChange={() => setFilterModes(prev => ({ ...prev, [mode.id]: !prev[mode.id as keyof typeof filterModes] }))}
-                        className="w-4 h-4 rounded text-[#146B5B] border-[#D9DED9] focus:ring-[#146B5B]"
-                      />
-                      {mode.label}
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              {/* Bus types */}
-              <div className="space-y-2">
-                <h4 className="text-xs uppercase font-extrabold tracking-wider text-[#667085]">Bus Type</h4>
-                <div className="grid grid-cols-2 gap-2.5">
-                  {busTypeOptions.map(opt => (
-                    <label key={opt.id} className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#1F2933]">
-                      <input
-                        type="checkbox"
-                        checked={busTypes[opt.id]}
-                        onChange={() => setBusTypes(prev => ({ ...prev, [opt.id]: !prev[opt.id] }))}
-                        className="w-4 h-4 rounded text-[#146B5B] border-[#D9DED9] focus:ring-[#146B5B]"
-                      />
-                      {opt.label}
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              {/* Price range */}
-              <div className="space-y-2">
-                <div className="flex justify-between text-xs font-extrabold text-[#667085]">
-                  <span>PRICE RANGE BUDGET</span>
-                  <span className="text-[#146B5B]">₹0 - ₹{maxPrice}</span>
-                </div>
-                <input
-                  type="range"
-                  min={100}
-                  max={6000}
-                  step={50}
-                  value={maxPrice}
-                  onChange={(e) => setMaxPrice(parseInt(e.target.value))}
-                  className="w-full h-1 bg-[#D9DED9] rounded-lg appearance-none cursor-pointer accent-[#146B5B]"
-                />
-              </div>
-
-              {/* Duration filter */}
-              <div className="space-y-2">
-                <h4 className="text-xs uppercase font-extrabold tracking-wider text-[#667085]">Journey Duration</h4>
-                <div className="grid grid-cols-2 gap-2.5">
-                  {[
-                    { id: 'under1', label: '⏱ Under 1 hour' },
-                    { id: 'hours1to2', label: '⏱ 1–2 hours' },
-                    { id: 'hours2to4', label: '⏱ 2–4 hours' },
-                    { id: 'over4', label: '⏱ More than 4 hours' }
-                  ].map(opt => (
-                    <label key={opt.id} className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#1F2933]">
-                      <input
-                        type="checkbox"
-                        checked={durations[opt.id as keyof typeof durations]}
-                        onChange={() => setDurations(prev => ({ ...prev, [opt.id]: !prev[opt.id as keyof typeof durations] }))}
-                        className="w-4 h-4 rounded text-[#146B5B] border-[#D9DED9] focus:ring-[#146B5B]"
-                      />
-                      {opt.label}
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              {/* Transfers filter */}
               <div className="space-y-2">
                 <h4 className="text-xs uppercase font-extrabold tracking-wider text-[#667085]">Transfers</h4>
                 <div className="grid grid-cols-2 gap-2.5">
-                  {[
-                    { id: 'trans0', label: '🔄 0 Transfers (Direct)' },
-                    { id: 'trans1', label: '🔄 1 Transfer' },
-                    { id: 'trans2', label: '🔄 2 Transfers' },
-                    { id: 'trans3plus', label: '🔄 3+ Transfers' }
-                  ].map(opt => (
-                    <label key={opt.id} className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#1F2933]">
-                      <input
-                        type="checkbox"
-                        checked={transfers[opt.id as keyof typeof transfers]}
-                        onChange={() => setTransfers(prev => ({ ...prev, [opt.id]: !prev[opt.id as keyof typeof transfers] }))}
-                        className="w-4 h-4 rounded text-[#146B5B] border-[#D9DED9] focus:ring-[#146B5B]"
-                      />
-                      {opt.label}
+                  {([['trans0', '🔄 0 Transfers (Direct)'], ['trans1', '🔄 1 Transfer'], ['trans2', '🔄 2 Transfers'], ['trans3plus', '🔄 3+ Transfers']] as const).map(([id, label]) => (
+                    <label key={id} className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#1F2933]">
+                      <input type="checkbox" checked={transfers[id]} onChange={() => setTransfers(prev => ({ ...prev, [id]: !prev[id] }))} className={checkbox} />
+                      {label}
                     </label>
                   ))}
                 </div>
               </div>
 
-              {/* Departure times */}
+              <div className="space-y-2">
+                <h4 className="text-xs uppercase font-extrabold tracking-wider text-[#667085]">Journey Duration</h4>
+                <div className="grid grid-cols-2 gap-2.5">
+                  {([['under2', '⏱ Under 2 hours'], ['hours2to4', '⏱ 2–4 hours'], ['hours4to8', '⏱ 4–8 hours'], ['over8', '⏱ More than 8 hours']] as const).map(([id, label]) => (
+                    <label key={id} className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#1F2933]">
+                      <input type="checkbox" checked={durations[id]} onChange={() => setDurations(prev => ({ ...prev, [id]: !prev[id] }))} className={checkbox} />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
               <div className="space-y-2">
                 <h4 className="text-xs uppercase font-extrabold tracking-wider text-[#667085]">Departure Time</h4>
                 <div className="grid grid-cols-2 gap-2.5">
-                  {[
-                    { id: 'morning', label: '🌅 Morning (6am-12pm)' },
-                    { id: 'afternoon', label: '☀️ Afternoon (12pm-5pm)' },
-                    { id: 'evening', label: '🌙 Evening (5pm-9pm)' },
-                    { id: 'night', label: '🌃 Night (9pm-6am)' }
-                  ].map(opt => (
-                    <label key={opt.id} className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#1F2933]">
-                      <input
-                        type="checkbox"
-                        checked={departureTimes[opt.id as keyof typeof departureTimes]}
-                        onChange={() => setDepartureTimes(prev => ({ ...prev, [opt.id]: !prev[opt.id as keyof typeof departureTimes] }))}
-                        className="w-4 h-4 rounded text-[#146B5B] border-[#D9DED9] focus:ring-[#146B5B]"
-                      />
-                      {opt.label}
+                  {([['morning', '🌅 Morning (6am-12pm)'], ['afternoon', '☀️ Afternoon (12pm-5pm)'], ['evening', '🌙 Evening (5pm-9pm)'], ['night', '🌃 Night (9pm-6am)']] as const).map(([id, label]) => (
+                    <label key={id} className="flex items-center gap-2 cursor-pointer text-xs font-bold text-[#1F2933]">
+                      <input type="checkbox" checked={departureTimes[id]} onChange={() => setDepartureTimes(prev => ({ ...prev, [id]: !prev[id] }))} className={checkbox} />
+                      {label}
                     </label>
                   ))}
                 </div>
               </div>
             </div>
 
-            {/* Footer Buttons */}
             <div className="mt-8 pt-4 border-t border-[#D9DED9] flex gap-4 shrink-0">
-              <button
-                type="button"
-                onClick={handleClearFilters}
-                className="flex-1 py-3 border border-[#D9DED9] hover:bg-gray-50 text-[#1F2933] font-bold rounded-xl text-xs transition"
-              >
+              <button type="button" onClick={handleClearFilters} className="flex-1 py-3 border border-[#D9DED9] hover:bg-gray-50 text-[#1F2933] font-bold rounded-xl text-xs transition">
                 Clear All
               </button>
-              <button
-                type="button"
-                onClick={() => setShowFilterPanel(false)}
-                className="flex-1 py-3 bg-[#146B5B] hover:bg-[#0f5447] text-white font-extrabold rounded-xl text-xs transition shadow-sm"
-              >
+              <button type="button" onClick={() => setShowFilterPanel(false)} className="flex-1 py-3 bg-[#146B5B] hover:bg-[#0f5447] text-white font-extrabold rounded-xl text-xs transition shadow-sm">
                 Apply Filters
               </button>
             </div>

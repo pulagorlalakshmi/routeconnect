@@ -8,7 +8,7 @@ export default function LoadingState({ label }: { label: string }) {
       </div>
       <p className="mt-5 text-base font-bold text-[#1F2933]">{label}</p>
       <p className="mt-2 max-w-xl mx-auto text-sm leading-6 text-[#667085]">
-        Checking available trains, buses, and local connections.
+        Checking the published timetable for services that fit your date and time.
       </p>
     </div>
   );

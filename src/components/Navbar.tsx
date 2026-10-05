@@ -8,13 +8,14 @@ interface SavedTrip {
   from: string;
   to: string;
   date: string;
+  time?: string;
 }
 
 interface SavedRoute {
   id: string;
   from: string;
   to: string;
-  price: number;
+  price: number | null; // null: no fare data exists for timetable-based routes
   duration: number;
   transfers: number;
   modes: string[];
@@ -86,6 +87,7 @@ export default function Navbar() {
       to: trip.to,
       date: trip.date
     });
+    if (trip.time) params.set('time', trip.time);
     navigate(`/search-results?${params.toString()}`);
   };
 
@@ -397,7 +399,9 @@ export default function Navbar() {
                       </p>
                     </div>
                     <div className="flex items-center gap-3">
-                      <span className="text-sm font-black text-[#146B5B]">₹{route.price}</span>
+                      {route.price !== null && route.price !== undefined && (
+                        <span className="text-sm font-black text-[#146B5B]">₹{route.price}</span>
+                      )}
                       <button
                         onClick={(e) => handleDeleteRoute(route.id, e)}
                         className="p-2 text-[#667085] hover:text-red-600 rounded-md hover:bg-red-50 transition"

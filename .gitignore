@@ -1,1 +1,39 @@
-node_modules
+# Dependencies
+node_modules/
+
+# Environment files (keep the *.example templates tracked)
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# Local databases (contain user data; generated at runtime)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Transit data: downloaded GTFS archives, the generated transit database and validation reports.
+# The GTFS feed is community-maintained with an unconfirmed licence: never commit or redistribute it.
+backend/transit/data/
+backend/transit/reports/
+*.zip
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Local scratch / experiments
+scratch/
+
+# Logs and temporary files
+*.log
+npm-debug.log*
+.vite/
+coverage/
+.DS_Store
+Thumbs.db

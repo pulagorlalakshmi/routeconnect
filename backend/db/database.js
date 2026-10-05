@@ -3,7 +3,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import bcrypt from 'bcryptjs';
 import { STATIC_LOCATIONS } from './staticLocations.js';
 import { STATIC_HUB_TRANSFERS } from './staticTransfers.js';
 import { STATIC_TRAIN_SERVICES, STATIC_BUS_SERVICES } from './staticTransitData.js';
@@ -219,7 +218,6 @@ export function initializeDatabase() {
   seedHubTransfers();
   seedIntercitySegments();
   seedMultiModalRoutes();
-  seedDefaultUser();
 }
 
 function seedLocations() {
@@ -1725,17 +1723,6 @@ export function getTransportStops(query = '', type = '') {
   }
   sql += ' ORDER BY name LIMIT 50';
   return db.prepare(sql).all(...params);
-}
-
-function seedDefaultUser() {
-  const findUserByEmail = db.prepare('SELECT * FROM users WHERE email = ?');
-  const createUser = db.prepare('INSERT INTO users (name, email, phone, password) VALUES (?, ?, ?, ?)');
-  const testUser = findUserByEmail.get('pulagorlalakshmi8@gmail.com');
-  if (!testUser) {
-    bcrypt.hash('password123', 10).then(hashed => {
-      createUser.run('lakshmi', 'pulagorlalakshmi8@gmail.com', '7569636588', hashed);
-    });
-  }
 }
 
 export function getDistance(lat1, lon1, lat2, lon2) {

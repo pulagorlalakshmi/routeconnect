@@ -1,22 +1,26 @@
+// Must stay first: loads .env before any module that reads process.env at import time.
+import './env.js';
+
 import express from 'express';
 import cors from 'cors';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
 
 import { db, initializeDatabase, getStoredIntermediateLocations, getTransportStops, getStoredMultiModalRoutes } from './db/database.js';
 import { searchStoredLocations, resolveLocation, reverseGeocode } from './services/geoService.js';
 import { findMultiModalRoutes } from './services/routingEngine.js';
 import { getGoogleRouteInsights } from './services/googleMapsService.js';
 import { getFlightOptions } from './services/flightService.js';
+import { getTransitStatus } from './transit/status.js';
+import { handlePlanRequest } from './transit/routing/planner.js';
+import { getTransitNetwork } from './transit/routing/dataLoader.js';
+import { handlePlaceSearch } from './transit/routing/placeSearch.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-dotenv.config({ path: path.join(__dirname, '.env') });
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -37,8 +41,22 @@ const createUser = db.prepare('INSERT INTO users (name, email, phone, password) 
 const getUserById = db.prepare('SELECT * FROM users WHERE id = ?');
 const getLastId = db.prepare('SELECT last_insert_rowid() as id');
 
-// In-memory session store
+// In-memory session store (sessions are lost on server restart)
 const sessions = new Map();
+
+// 256-bit cryptographically secure session token
+function createSession(data) {
+  const token = crypto.randomBytes(32).toString('hex');
+  sessions.set(token, data);
+  return token;
+}
+
+// Session token is read from "Authorization: Bearer <token>" (never from the URL)
+function getSessionToken(req) {
+  const header = req.headers.authorization || '';
+  const match = /^Bearer\s+([A-Za-z0-9]+)$/.exec(header);
+  return match ? match[1] : null;
+}
 
 // Authentication Endpoints
 app.post('/api/auth/signup', async (req, res) => {
@@ -67,8 +85,7 @@ app.post('/api/auth/signup', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     createUser.run(normalizedName, normalizedEmail, normalizedPhone, hashedPassword);
     const userId = getLastId.get().id;
-    const sessionId = Math.random().toString(36).substring(7);
-    sessions.set(sessionId, { userId, email: normalizedEmail, name: normalizedName });
+    const sessionId = createSession({ userId, email: normalizedEmail, name: normalizedName });
 
     return res.status(201).json({
       message: 'User registered successfully',
@@ -96,8 +113,7 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email/phone or password' });
     }
 
-    const sessionId = Math.random().toString(36).substring(7);
-    sessions.set(sessionId, { userId: user.id, email: user.email, name: user.name });
+    const sessionId = createSession({ userId: user.id, email: user.email, name: user.name });
 
     return res.status(200).json({
       message: 'Login successful',
@@ -110,24 +126,26 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-app.get('/api/auth/profile/:sessionId', (req, res) => {
-  const session = sessions.get(req.params.sessionId);
+app.get('/api/auth/profile', (req, res) => {
+  const session = sessions.get(getSessionToken(req));
   if (!session) return res.status(401).json({ error: 'Invalid session' });
   const user = getUserById.get(session.userId);
   return res.status(200).json({ user: { id: user.id, name: user.name, email: user.email, phone: user.phone } });
 });
 
-app.put('/api/auth/profile/:sessionId', (req, res) => {
-  const session = sessions.get(req.params.sessionId);
+app.put('/api/auth/profile', (req, res) => {
+  const token = getSessionToken(req);
+  const session = sessions.get(token);
   if (!session) return res.status(401).json({ error: 'Invalid session' });
   const { name, email, phone } = req.body;
   db.prepare('UPDATE users SET name = ?, email = ?, phone = ? WHERE id = ?').run(name, email, phone, session.userId);
-  sessions.set(req.params.sessionId, { ...session, email, name });
+  sessions.set(token, { ...session, email, name });
   return res.status(200).json({ user: { id: session.userId, name, email, phone } });
 });
 
-app.post('/api/auth/logout/:sessionId', (req, res) => {
-  sessions.delete(req.params.sessionId);
+app.post('/api/auth/logout', (req, res) => {
+  const token = getSessionToken(req);
+  if (token) sessions.delete(token);
   return res.status(200).json({ message: 'Logged out successfully' });
 });
 
@@ -263,6 +281,28 @@ app.get('/api/planner', async (req, res) => {
   }
 });
 
+// Transit dataset status (read-only provenance/validity/counts; not used by the planner yet)
+app.get('/api/transit/status', (req, res) => {
+  try {
+    return res.status(200).json(getTransitStatus());
+  } catch (error) {
+    console.error('Transit status error:', error.message);
+    return res.status(500).json({ error: 'Unable to read transit dataset status' });
+  }
+});
+
+// GTFS time-aware planner (RAPTOR). Independent of the legacy /api/planner above, which is unchanged.
+app.get('/api/v2/plan', (req, res) => {
+  const { status, body } = handlePlanRequest(req.query);
+  return res.status(status).json(body);
+});
+
+// Stop/place autocomplete for the GTFS planner: only places that exist in the timetable are suggested.
+app.get('/api/v2/places', (req, res) => {
+  const { status, body } = handlePlaceSearch(req.query, () => getTransitNetwork());
+  return res.status(status).json(body);
+});
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.status(200).json({
@@ -290,4 +330,13 @@ if (fs.existsSync(distPath)) {
 
 app.listen(PORT, () => {
   console.log(`RouteConnect server running on http://localhost:${PORT}`);
+  // Warm the in-memory transit network so the first /api/v2/plan request is fast (skipped if nothing is imported).
+  setImmediate(() => {
+    try {
+      const network = getTransitNetwork();
+      if (network) console.log(`Transit network ready: ${network.stats.patterns} patterns, ${network.stats.stops} stops (${network.stats.loadTimeMs} ms)`);
+    } catch (error) {
+      console.warn('Transit network warm-up skipped:', error.message);
+    }
+  });
 });

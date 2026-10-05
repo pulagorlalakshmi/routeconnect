@@ -123,8 +123,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = async () => {
     try {
       if (sessionId) {
-        await fetch(`${API_BASE}/auth/logout/${sessionId}`, {
+        await fetch(`${API_BASE}/auth/logout`, {
           method: 'POST',
+          headers: { Authorization: `Bearer ${sessionId}` },
         });
       }
       setUser(null);
@@ -147,9 +148,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       if (!sessionId) throw new Error('No active session');
 
-      const response = await fetch(`${API_BASE}/auth/profile/${sessionId}`, {
+      const response = await fetch(`${API_BASE}/auth/profile`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionId}` },
         body: JSON.stringify({ name, email, phone }),
       });
 

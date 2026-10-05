@@ -1,3 +1,6 @@
+// How much a value can be trusted (weakest -> strongest). Estimated values must never be shown as verified.
+export type DataConfidence = 'unknown' | 'estimated' | 'inferred' | 'published' | 'verified' | 'live';
+
 export interface RouteSegment {
   mode: 'train' | 'bus' | 'auto' | 'cab' | 'uber' | 'rapido' | 'walking' | 'flight' | 'airport_transfer';
   provider: string;
@@ -38,6 +41,12 @@ export interface RouteSegment {
   availabilityStatus?: string | null;
   offerExpiresAt?: string | null;
   stops?: string | null;
+  // Set on estimated ride-hailing legs (no provider integration exists)
+  providerIntegration?: boolean;
+  dataConfidence?: DataConfidence;
+  fareConfidence?: DataConfidence;
+  durationConfidence?: DataConfidence;
+  isRealtime?: boolean;
 }
 
 export interface RouteTransfer {
@@ -143,6 +152,14 @@ export interface RouteResult {
   arrivalDateISO?: string;
   isNextDay?: boolean;
   timeSynchronization?: RouteTimeSync;
+  // Set on routes that contain an estimated ride-hailing (Uber/Rapido) leg
+  providerIntegration?: boolean;
+  dataConfidence?: DataConfidence;
+  fareConfidence?: DataConfidence;
+  durationConfidence?: DataConfidence;
+  isRealtime?: boolean;
+  rankingClass?: 'estimated_ride_hailing';
+  rideHailingNote?: string;
 }
 
 export interface TimeSynchronizationInfo {

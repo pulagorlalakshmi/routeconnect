@@ -1,5 +1,7 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { MapPin, Navigation, Map, X, Globe, Check, AlertCircle, Loader2 } from 'lucide-react';
+import { searchPlaces } from '../services/planService';
+import type { PlaceSuggestion } from '../services/planService';
 
 declare global {
   interface Window {
@@ -12,195 +14,18 @@ export interface SuggestionItem {
   type: 'city' | 'station' | 'bus' | 'airport' | 'landmark' | 'nearby_station' | 'nearby_bus';
   subtitle: string;
   district: string;
+  lat?: number;
+  lon?: number;
 }
 
-const RICH_SUGGESTIONS: SuggestionItem[] = [
-  // West Godavari (AP)
-  { name: 'Bhimavaram', type: 'city', subtitle: 'Bhimavaram Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Bhimavaram Railway Station', type: 'station', subtitle: 'Bhimavaram Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Bhimavaram Junction', type: 'station', subtitle: 'Bhimavaram Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Bhimavaram Bus Station', type: 'bus', subtitle: 'Bhimavaram Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  
-  // Duplicate Undi Entry
-  { name: 'Undi (Undi Mandal)', type: 'city', subtitle: 'Undi Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Undi (Chinna Mandal)', type: 'city', subtitle: 'Chinna Mandal, Sri Sathya Sai, Andhra Pradesh', district: 'Sri Sathya Sai' },
-  { name: 'Undi', type: 'city', subtitle: 'Undi Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-
-  { name: 'Akividu', type: 'city', subtitle: 'Akividu Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Akividu Railway Station', type: 'station', subtitle: 'Akividu Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Akividu Bus Station', type: 'bus', subtitle: 'Akividu Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Veeravasaram', type: 'city', subtitle: 'Veeravasaram Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Kalla', type: 'city', subtitle: 'Kalla Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Kalla Bus Stop', type: 'bus', subtitle: 'Kalla Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Mogalthur', type: 'city', subtitle: 'Mogalthur Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Palakollu', type: 'city', subtitle: 'Palakollu Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Narasapuram', type: 'city', subtitle: 'Narasapuram Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Narsapur Railway Station', type: 'station', subtitle: 'Narasapuram Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Penugonda', type: 'city', subtitle: 'Penugonda Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Attili', type: 'city', subtitle: 'Attili Mandal, West Godavari, Andhra Pradesh', district: 'West Godavari' },
-  { name: 'Ganapavaram', type: 'city', subtitle: 'Ganapavaram Mandal, Eluru, Andhra Pradesh', district: 'Eluru' },
-  { name: 'Kakinada', type: 'city', subtitle: 'Kakinada Mandal, Kakinada, Andhra Pradesh', district: 'Kakinada' },
-
-  // NTR (Vijayawada)
-  { name: 'Vijayawada', type: 'city', subtitle: 'Vijayawada Mandal, NTR, Andhra Pradesh', district: 'NTR' },
-  { name: 'Vijayawada Railway Station', type: 'station', subtitle: 'Vijayawada Mandal, NTR, Andhra Pradesh', district: 'NTR' },
-  { name: 'Vijayawada Bus Station', type: 'bus', subtitle: 'Vijayawada Mandal, NTR, Andhra Pradesh', district: 'NTR' },
-  { name: 'Vijayawada Pandit Nehru Bus Station', type: 'bus', subtitle: 'Vijayawada Mandal, NTR, Andhra Pradesh', district: 'NTR' },
-  { name: 'Vijayawada Airport', type: 'airport', subtitle: 'Gannavaram, NTR, Andhra Pradesh', district: 'NTR' },
-  { name: 'Vijayawada International Airport', type: 'airport', subtitle: 'Gannavaram, NTR, Andhra Pradesh', district: 'NTR' },
-  { name: 'Vijayawada City', type: 'city', subtitle: 'Vijayawada Mandal, NTR, Andhra Pradesh', district: 'NTR' },
-  { name: 'Kanaka Durga Temple', type: 'landmark', subtitle: 'Indrakeeladri, Vijayawada, Andhra Pradesh', district: 'NTR' },
-  { name: 'Ibrahimpatnam', type: 'city', subtitle: 'Ibrahimpatnam Mandal, NTR, Andhra Pradesh', district: 'NTR' },
-  { name: 'Nandigama', type: 'city', subtitle: 'Nandigama Mandal, NTR, Andhra Pradesh', district: 'NTR' },
-
-  // Krishna
-  { name: 'Machilipatnam', type: 'city', subtitle: 'Machilipatnam Mandal, Krishna, Andhra Pradesh', district: 'Krishna' },
-  { name: 'Gudivada', type: 'city', subtitle: 'Gudivada Mandal, Krishna, Andhra Pradesh', district: 'Krishna' },
-  { name: 'Challapalli', type: 'city', subtitle: 'Challapalli Mandal, Krishna, Andhra Pradesh', district: 'Krishna' },
-  { name: 'Vuyyuru', type: 'city', subtitle: 'Vuyyuru Mandal, Krishna, Andhra Pradesh', district: 'Krishna' },
-
-  // Visakhapatnam
-  { name: 'Visakhapatnam', type: 'city', subtitle: 'Visakhapatnam Mandal, Visakhapatnam, Andhra Pradesh', district: 'Visakhapatnam' },
-  { name: 'Visakhapatnam Railway Station', type: 'station', subtitle: 'Dwaraka Nagar, Visakhapatnam, Andhra Pradesh', district: 'Visakhapatnam' },
-  { name: 'Dwaraka Bus Complex', type: 'bus', subtitle: 'RTC Complex Road, Visakhapatnam, Andhra Pradesh', district: 'Visakhapatnam' },
-  { name: 'Visakhapatnam Airport', type: 'airport', subtitle: 'Visakhapatnam, Andhra Pradesh', district: 'Visakhapatnam' },
-  { name: 'Gajuwaka', type: 'city', subtitle: 'Gajuwaka Mandal, Visakhapatnam, Andhra Pradesh', district: 'Visakhapatnam' },
-  { name: 'Bheemunipatnam', type: 'city', subtitle: 'Bheemunipatnam Mandal, Visakhapatnam, Andhra Pradesh', district: 'Visakhapatnam' },
-
-  // Guntur
-  { name: 'Guntur', type: 'city', subtitle: 'Guntur Mandal, Guntur, Andhra Pradesh', district: 'Guntur' },
-  { name: 'Guntur Railway Station', type: 'station', subtitle: 'Guntur Mandal, Guntur, Andhra Pradesh', district: 'Guntur' },
-  { name: 'Guntur Bus Station', type: 'bus', subtitle: 'Guntur Mandal, Guntur, Andhra Pradesh', district: 'Guntur' },
-  { name: 'Tenali', type: 'city', subtitle: 'Tenali Mandal, Guntur, Andhra Pradesh', district: 'Guntur' },
-  { name: 'Mangalagiri', type: 'city', subtitle: 'Mangalagiri Mandal, Guntur, Andhra Pradesh', district: 'Guntur' },
-  { name: 'Amaravati', type: 'city', subtitle: 'Amaravati Mandal, Guntur, Andhra Pradesh', district: 'Guntur' },
-
-  // Tirupati
-  { name: 'Tirupati', type: 'city', subtitle: 'Tirupati Mandal, Tirupati, Andhra Pradesh', district: 'Tirupati' },
-  { name: 'Tirupati Railway Station', type: 'station', subtitle: 'Tirupati Mandal, Tirupati, Andhra Pradesh', district: 'Tirupati' },
-  { name: 'Tirupati Bus Station', type: 'bus', subtitle: 'Tirupati Mandal, Tirupati, Andhra Pradesh', district: 'Tirupati' },
-  { name: 'Renigunta', type: 'city', subtitle: 'Renigunta Mandal, Tirupati, Andhra Pradesh', district: 'Tirupati' },
-
-  // East Godavari
-  { name: 'Rajahmundry', type: 'city', subtitle: 'Rajahmundry Mandal, East Godavari, Andhra Pradesh', district: 'East Godavari' },
-  { name: 'Rajahmundry Railway Station', type: 'station', subtitle: 'Rajahmundry Mandal, East Godavari, Andhra Pradesh', district: 'East Godavari' },
-  { name: 'Rajahmundry Bus Station', type: 'bus', subtitle: 'Rajahmundry Mandal, East Godavari, Andhra Pradesh', district: 'East Godavari' },
-  { name: 'Kovvur', type: 'city', subtitle: 'Kovvur Mandal, East Godavari, Andhra Pradesh', district: 'East Godavari' },
-  { name: 'Nearby Village', type: 'city', subtitle: 'Rajahmundry Mandal, East Godavari, Andhra Pradesh', district: 'East Godavari' },
-
-  // Other AP Cities
-  { name: 'Nellore', type: 'city', subtitle: 'Nellore Mandal, SPS Nellore, Andhra Pradesh', district: 'Sri Potti Sriramulu Nellore' },
-  { name: 'Kurnool', type: 'city', subtitle: 'Kurnool Mandal, Kurnool, Andhra Pradesh', district: 'Kurnool' },
-  { name: 'Narasaraopet', type: 'city', subtitle: 'Narasaraopet Mandal, Palnadu, Andhra Pradesh', district: 'Palnadu' },
-  { name: 'Narasaraopet Bus Station', type: 'bus', subtitle: 'Narasaraopet Mandal, Palnadu, Andhra Pradesh', district: 'Palnadu' },
-  { name: 'Narasaraopet Railway Station', type: 'station', subtitle: 'Narasaraopet Mandal, Palnadu, Andhra Pradesh', district: 'Palnadu' },
-  { name: 'Ongole', type: 'city', subtitle: 'Ongole Mandal, Prakasam, Andhra Pradesh', district: 'Prakasam' },
-  { name: 'Ongole Bus Stand', type: 'bus', subtitle: 'Ongole Mandal, Prakasam, Andhra Pradesh', district: 'Prakasam' },
-  { name: 'Ongole Railway Station', type: 'station', subtitle: 'Ongole Mandal, Prakasam, Andhra Pradesh', district: 'Prakasam' },
-  { name: 'Kanigiri', type: 'city', subtitle: 'Kanigiri Mandal, Prakasam, Andhra Pradesh', district: 'Prakasam' },
-  { name: 'Kanigiri Bus Stand', type: 'bus', subtitle: 'Kanigiri Mandal, Prakasam, Andhra Pradesh', district: 'Prakasam' },
-  { name: 'Addanki', type: 'city', subtitle: 'Addanki Mandal, Bapatla, Andhra Pradesh', district: 'Bapatla' },
-  { name: 'Chilakaluripeta', type: 'city', subtitle: 'Chilakaluripeta Mandal, Palnadu, Andhra Pradesh', district: 'Palnadu' },
-
-  // Multi-Modal Network & Village Transit Test Hubs
-  { name: 'Village A', type: 'city', subtitle: 'Rural Habitation, Prakasam District, Andhra Pradesh', district: 'Prakasam' },
-  { name: 'Village A Bus Stop', type: 'bus', subtitle: 'Feeder Bus Stop (1.2 km from Village A)', district: 'Prakasam' },
-  { name: 'Village B', type: 'city', subtitle: 'Rural Village (Intermediate Interchange), Prakasam', district: 'Prakasam' },
-  { name: 'Town B', type: 'city', subtitle: 'Regional Transit Hub, Prakasam District, Andhra Pradesh', district: 'Prakasam' },
-  { name: 'Town B Bus Stand', type: 'bus', subtitle: 'APSRTC Regional Bus Stand, Town B', district: 'Prakasam' },
-  { name: 'Town B Railway Station', type: 'station', subtitle: 'SCR Railway Station, Town B', district: 'Prakasam' },
-  { name: 'Town C', type: 'city', subtitle: 'Regional Highway Junction, Bapatla District', district: 'Bapatla' },
-  { name: 'Town C Bus Stand', type: 'bus', subtitle: 'APSRTC Bus Station, Town C', district: 'Bapatla' },
-  { name: 'Town C Railway Station', type: 'station', subtitle: 'SCR Railway Station, Town C', district: 'Bapatla' },
-  { name: 'Town X', type: 'city', subtitle: 'Regional Transit Hub, Palnadu District, Andhra Pradesh', district: 'Palnadu' },
-  { name: 'Town X Bus Stand', type: 'bus', subtitle: 'APSRTC Regional Bus Stand, Town X', district: 'Palnadu' },
-  { name: 'Town X Railway Station', type: 'station', subtitle: 'SCR Railway Station, Town X', district: 'Palnadu' },
-  { name: 'Town Y', type: 'city', subtitle: 'Highway Junction, Prakasam District, Andhra Pradesh', district: 'Prakasam' },
-  { name: 'Town Y Bus Stand', type: 'bus', subtitle: 'APSRTC Bus Station, Town Y', district: 'Prakasam' },
-  { name: 'Railway Station X', type: 'station', subtitle: 'SCR Rail Hub Station X, Palnadu', district: 'Palnadu' },
-  { name: 'Railway Station Z', type: 'station', subtitle: 'Rural Rail Junction, South Central Railway', district: 'Palnadu' },
-  { name: 'Railway Station D', type: 'station', subtitle: 'Intermediate Rail Junction Station D', district: 'Prakasam' },
-  { name: 'Railway Station Y', type: 'station', subtitle: 'City Gateway Rail Station Y', district: 'Prakasam' },
-  { name: 'City B', type: 'city', subtitle: 'Major Urban Terminal, Andhra Pradesh', district: 'Prakasam' },
-  { name: 'City B Railway Station', type: 'station', subtitle: 'Main Railway Terminal, City B', district: 'Prakasam' },
-  { name: 'City B Bus Stand', type: 'bus', subtitle: 'Central Bus Stand, City B', district: 'Prakasam' },
-  { name: 'City D', type: 'city', subtitle: 'Major Urban Terminal City D, Andhra Pradesh', district: 'Prakasam' },
-  { name: 'City D Railway Station', type: 'station', subtitle: 'Main Rail Terminal, City D', district: 'Prakasam' },
-  { name: 'City D Bus Stand', type: 'bus', subtitle: 'Central RTC Bus Station, City D', district: 'Prakasam' },
-  { name: 'City C', type: 'city', subtitle: 'Major Urban City C, Andhra Pradesh', district: 'Prakasam' },
-  { name: 'City C Railway Station', type: 'station', subtitle: 'Main Rail Terminal, City C', district: 'Prakasam' },
-  { name: 'Final Destination', type: 'landmark', subtitle: 'Urban Center / IT Tech Park, Ongole', district: 'Prakasam' },
-
-  // North India Major Cities
-  { name: 'Delhi', type: 'city', subtitle: 'National Capital Territory, Delhi NCR, India', district: 'Delhi NCR' },
-  { name: 'Chandigarh', type: 'city', subtitle: 'Union Territory, Chandigarh, India', district: 'Chandigarh' },
-  { name: 'Jaipur', type: 'city', subtitle: 'Jaipur, Rajasthan, India', district: 'Jaipur' },
-  { name: 'Lucknow', type: 'city', subtitle: 'Lucknow, Uttar Pradesh, India', district: 'Lucknow' },
-  { name: 'Kanpur', type: 'city', subtitle: 'Kanpur, Uttar Pradesh, India', district: 'Kanpur' },
-  { name: 'Agra', type: 'city', subtitle: 'Agra, Uttar Pradesh, India', district: 'Agra' },
-  { name: 'Varanasi', type: 'city', subtitle: 'Varanasi, Uttar Pradesh, India', district: 'Varanasi' },
-  { name: 'Amritsar', type: 'city', subtitle: 'Amritsar, Punjab, India', district: 'Amritsar' },
-  { name: 'Dehradun', type: 'city', subtitle: 'Dehradun, Uttarakhand, India', district: 'Dehradun' },
-  { name: 'Srinagar', type: 'city', subtitle: 'Srinagar, Jammu & Kashmir, India', district: 'Srinagar' },
-  { name: 'Jammu', type: 'city', subtitle: 'Jammu, Jammu & Kashmir, India', district: 'Jammu' },
-
-  // South India Interstate Cities
-  { name: 'Hyderabad', type: 'city', subtitle: 'Hyderabad, Telangana, India', district: 'Telangana' },
-  { name: 'Bengaluru', type: 'city', subtitle: 'Bengaluru Urban, Karnataka, India', district: 'Karnataka' },
-  { name: 'Chennai', type: 'city', subtitle: 'Chennai, Tamil Nadu, India', district: 'Tamil Nadu' },
-  { name: 'Kochi', type: 'city', subtitle: 'Ernakulam, Kerala, India', district: 'Kerala' },
-  { name: 'Thiruvananthapuram', type: 'city', subtitle: 'Thiruvananthapuram, Kerala, India', district: 'Kerala' },
-  { name: 'Coimbatore', type: 'city', subtitle: 'Coimbatore, Tamil Nadu, India', district: 'Tamil Nadu' },
-  { name: 'Madurai', type: 'city', subtitle: 'Madurai, Tamil Nadu, India', district: 'Tamil Nadu' },
-  { name: 'Mysuru', type: 'city', subtitle: 'Mysuru, Karnataka, India', district: 'Karnataka' },
-  { name: 'Mangaluru', type: 'city', subtitle: 'Dakshina Kannada, Karnataka, India', district: 'Karnataka' },
-  
-  // Airports
-  { name: 'Rajiv Gandhi International Airport', type: 'airport', subtitle: 'Shamshabad, Hyderabad, Telangana', district: 'Telangana' },
-  { name: 'Hyderabad Airport', type: 'airport', subtitle: 'Shamshabad, Hyderabad, Telangana', district: 'Telangana' },
-  { name: 'Bengaluru Airport', type: 'airport', subtitle: 'Devanahalli, Bengaluru, Karnataka', district: 'Karnataka' },
-  { name: 'Charminar', type: 'landmark', subtitle: 'Hyderabad, Telangana, India', district: 'Telangana' },
-
-  // West India Major Cities
-  { name: 'Mumbai', type: 'city', subtitle: 'Mumbai City, Maharashtra, India', district: 'Maharashtra' },
-  { name: 'Pune', type: 'city', subtitle: 'Pune, Maharashtra, India', district: 'Maharashtra' },
-  { name: 'Nagpur', type: 'city', subtitle: 'Nagpur, Maharashtra, India', district: 'Maharashtra' },
-  { name: 'Nashik', type: 'city', subtitle: 'Nashik, Maharashtra, India', district: 'Maharashtra' },
-  { name: 'Ahmedabad', type: 'city', subtitle: 'Ahmedabad, Gujarat, India', district: 'Gujarat' },
-  { name: 'Surat', type: 'city', subtitle: 'Surat, Gujarat, India', district: 'Gujarat' },
-  { name: 'Vadodara', type: 'city', subtitle: 'Vadodara, Gujarat, India', district: 'Gujarat' },
-  { name: 'Rajkot', type: 'city', subtitle: 'Rajkot, Gujarat, India', district: 'Gujarat' },
-  { name: 'Goa', type: 'city', subtitle: 'South Goa, Goa, India', district: 'Goa' },
-
-  // East India Major Cities
-  { name: 'Kolkata', type: 'city', subtitle: 'Kolkata, West Bengal, India', district: 'West Bengal' },
-  { name: 'Bhubaneswar', type: 'city', subtitle: 'Khordha, Odisha, India', district: 'Odisha' },
-  { name: 'Cuttack', type: 'city', subtitle: 'Cuttack, Odisha, India', district: 'Odisha' },
-  { name: 'Patna', type: 'city', subtitle: 'Patna, Bihar, India', district: 'Bihar' },
-  { name: 'Ranchi', type: 'city', subtitle: 'Ranchi, Jharkhand, India', district: 'Jharkhand' },
-  { name: 'Jamshedpur', type: 'city', subtitle: 'East Singhbhum, Jharkhand, India', district: 'Jharkhand' },
-  { name: 'Guwahati', type: 'city', subtitle: 'Kamrup Metropolitan, Assam, India', district: 'Assam' },
-  { name: 'Siliguri', type: 'city', subtitle: 'Darjeeling, West Bengal, India', district: 'West Bengal' },
-
-  // Central India Major Cities
-  { name: 'Bhopal', type: 'city', subtitle: 'Bhopal, Madhya Pradesh, India', district: 'Madhya Pradesh' },
-  { name: 'Indore', type: 'city', subtitle: 'Indore, Madhya Pradesh, India', district: 'Madhya Pradesh' },
-  { name: 'Gwalior', type: 'city', subtitle: 'Gwalior, Madhya Pradesh, India', district: 'Madhya Pradesh' },
-  { name: 'Jabalpur', type: 'city', subtitle: 'Jabalpur, Madhya Pradesh, India', district: 'Madhya Pradesh' },
-  { name: 'Raipur', type: 'city', subtitle: 'Raipur, Chhattisgarh, India', district: 'Chhattisgarh' },
-  { name: 'Bilaspur', type: 'city', subtitle: 'Bilaspur, Chhattisgarh, India', district: 'Chhattisgarh' },
-];
-
-const SUGGESTED_MAP_PINS = [
-  { name: 'Visakhapatnam', lat: 17.6868, lon: 83.2185, x: 380, y: 150 },
-  { name: 'Vijayawada', lat: 16.5062, lon: 80.6480, x: 270, y: 260 },
-  { name: 'Rajahmundry', lat: 17.0005, lon: 81.7835, x: 310, y: 220 },
-  { name: 'Tirupati', lat: 13.6288, lon: 79.4192, x: 210, y: 410 },
-  { name: 'Bhimavaram', lat: 16.5449, lon: 81.5212, x: 290, y: 245 },
-  { name: 'Guntur', lat: 16.3067, lon: 80.4365, x: 250, y: 270 },
-  { name: 'Narasaraopet', lat: 16.2359, lon: 80.0499, x: 235, y: 285 },
-  { name: 'Ongole', lat: 15.5057, lon: 80.0499, x: 235, y: 340 },
-];
+const toSuggestion = (place: PlaceSuggestion): SuggestionItem => ({
+  name: place.name,
+  type: 'bus',
+  subtitle: `${place.stopCount} stop${place.stopCount === 1 ? '' : 's'} · ${place.services} service${place.services === 1 ? '' : 's'}`,
+  district: '',
+  lat: place.lat,
+  lon: place.lon
+});
 
 interface LocationInputProps {
   label: string;
@@ -208,10 +33,12 @@ interface LocationInputProps {
   value: string;
   onChange: (value: string) => void;
   onCurrentLocation?: (latitude: number, longitude: number) => void;
+  // Called with the coordinates of a stop picked from the suggestions or of a point chosen on the map.
+  onCoordinates?: (latitude: number, longitude: number) => void;
   suggestions?: string[];
 }
 
-export default function LocationInput({ label, placeholder, value, onChange, onCurrentLocation }: LocationInputProps) {
+export default function LocationInput({ label, placeholder, value, onChange, onCurrentLocation, onCoordinates }: LocationInputProps) {
   const [isFocused, setIsFocused] = useState(false);
   const [showMapPicker, setShowMapPicker] = useState(false);
   const [geoLoading, setGeoLoading] = useState(false);
@@ -351,101 +178,38 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
     };
   }, [showMapPicker, requestLocationOnOpen]);
 
-  const filteredSuggestions = useMemo(() => {
-    if (!value.trim()) return [];
-    const query = value.toLowerCase().trim();
+  // Suggestions come from the stops in the transit timetable, so every suggestion can actually be routed.
+  const [placeSuggestions, setPlaceSuggestions] = useState<SuggestionItem[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
 
-    const isCurrentLocQuery = /^(?:📍\s*)?(?:curr|current|gps|my\s*loc|use\s*my|use\s*curr|here)/i.test(query);
-
-    let matches = RICH_SUGGESTIONS.filter(
-      (item) => item.name.toLowerCase().includes(query) || item.subtitle.toLowerCase().includes(query)
-    );
-
-    // Dynamic autocomplete fallback
-    if (matches.length === 0 && !isCurrentLocQuery) {
-      const capQuery = value.charAt(0).toUpperCase() + value.slice(1);
-      return [
-        { name: capQuery, type: 'city', subtitle: `${capQuery}, India`, district: 'India' } as SuggestionItem,
-        { name: `${capQuery} Railway Station`, type: 'station', subtitle: `${capQuery}, India`, district: 'India' } as SuggestionItem,
-        { name: `${capQuery} Bus Stop`, type: 'bus', subtitle: `${capQuery}, India`, district: 'India' } as SuggestionItem,
-      ];
+  useEffect(() => {
+    const query = value.trim();
+    if (!isFocused || query.length < 1 || /current\s*location/i.test(query)) {
+      setPlaceSuggestions([]);
+      setSuggestionsLoading(false);
+      return;
     }
+    const controller = new AbortController();
+    setSuggestionsLoading(true);
+    const timer = setTimeout(() => {
+      searchPlaces(query, controller.signal)
+        .then(places => {
+          setPlaceSuggestions(places.map(toSuggestion));
+          setSuggestionsLoading(false);
+        })
+        .catch(error => {
+          if ((error as Error).name === 'AbortError') return;
+          setPlaceSuggestions([]);
+          setSuggestionsLoading(false);
+        });
+    }, 180);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [value, isFocused]);
 
-    const finalMatches: SuggestionItem[] = [];
-    if (isCurrentLocQuery) {
-      finalMatches.push({
-        name: '📍 Use My Current Location',
-        type: 'landmark',
-        subtitle: 'Detect current location and preview on Google Map',
-        district: 'GPS'
-      });
-      finalMatches.push({
-        name: '📍 Current Location',
-        type: 'landmark',
-        subtitle: 'Use your actual current GPS location',
-        district: 'GPS'
-      });
-    }
-
-    matches.slice(0, 10).forEach((m) => {
-      finalMatches.push(m);
-      
-      const lowerName = m.name.toLowerCase();
-      
-      // Inject AP village local hub warnings
-      if (lowerName === 'undi') {
-        finalMatches.push({ name: 'Bhimavaram Junction', type: 'nearby_station', subtitle: 'Nearby Railway Stations', district: m.district });
-        finalMatches.push({ name: 'Akividu Railway Station', type: 'nearby_station', subtitle: 'Nearby Railway Stations', district: m.district });
-      } else if (lowerName === 'kalla') {
-        finalMatches.push({ name: 'Bhimavaram Junction', type: 'nearby_station', subtitle: 'Nearby Railway Stations', district: m.district });
-        finalMatches.push({ name: 'Akividu Railway Station', type: 'nearby_station', subtitle: 'Nearby Railway Stations', district: m.district });
-        finalMatches.push({ name: 'Kalla Bus Stop', type: 'nearby_bus', subtitle: 'Nearby Bus Stops', district: m.district });
-      }
-      
-      // Inject Hyderabad primary options (Verbatim UI spec match)
-      else if (lowerName === 'hyderabad') {
-        finalMatches.push({ name: 'Telangana, India', type: 'landmark', subtitle: 'State of Hyderabad', district: m.district });
-        finalMatches.push({ name: 'Hyderabad Railway Station', type: 'station', subtitle: 'Nampally, Hyderabad, Telangana', district: m.district });
-        finalMatches.push({ name: 'Secunderabad Railway Station', type: 'station', subtitle: 'Secunderabad, Telangana', district: m.district });
-        finalMatches.push({ name: 'MGBS Bus Station', type: 'bus', subtitle: 'Imlibun, Hyderabad, Telangana', district: m.district });
-        finalMatches.push({ name: 'Rajiv Gandhi International Airport', type: 'airport', subtitle: 'Shamshabad, Hyderabad, Telangana', district: m.district });
-      }
-      
-      // Inject Bengaluru options
-      else if (lowerName === 'bengaluru') {
-        finalMatches.push({ name: 'Bengaluru Railway Station', type: 'station', subtitle: 'Majestic, Bengaluru, Karnataka', district: m.district });
-        finalMatches.push({ name: 'Bengaluru Bus Station', type: 'bus', subtitle: 'Majestic, Bengaluru, Karnataka', district: m.district });
-        finalMatches.push({ name: 'Kempegowda International Airport', type: 'airport', subtitle: 'Devanahalli, Bengaluru, Karnataka', district: m.district });
-      }
-
-      // Inject Chennai options
-      else if (lowerName === 'chennai') {
-        finalMatches.push({ name: 'Chennai Central Railway Station', type: 'station', subtitle: 'Periamet, Chennai, Tamil Nadu', district: m.district });
-        finalMatches.push({ name: 'Koyambedu Bus Station', type: 'bus', subtitle: 'Koyambedu, Chennai, Tamil Nadu', district: m.district });
-        finalMatches.push({ name: 'Chennai International Airport', type: 'airport', subtitle: 'Meenambakkam, Chennai, Tamil Nadu', district: m.district });
-      }
-
-      // Inject Delhi options
-      else if (lowerName === 'delhi') {
-        finalMatches.push({ name: 'New Delhi Railway Station', type: 'station', subtitle: 'Paharganj, New Delhi, Delhi', district: m.district });
-        finalMatches.push({ name: 'Kashmere Gate ISBT', type: 'bus', subtitle: 'Kashmere Gate, Delhi', district: m.district });
-        finalMatches.push({ name: 'Indira Gandhi International Airport', type: 'airport', subtitle: 'Palam, New Delhi, Delhi', district: m.district });
-      }
-    });
-
-    // Remove duplicates
-    const uniqueMatches: SuggestionItem[] = [];
-    const seen = new Set<string>();
-    for (const item of finalMatches) {
-      const key = `${item.name.toLowerCase()}-${item.type}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        uniqueMatches.push(item);
-      }
-    }
-
-    return uniqueMatches;
-  }, [value]);
+  const filteredSuggestions = placeSuggestions;
 
   const getEmojiForType = (type: SuggestionItem['type']) => {
     switch (type) {
@@ -526,6 +290,8 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
     onChange(selectedName);
     if (selectedMapLocation?.isCurrentLocation) {
       onCurrentLocation?.(selectedMapLocation.lat, selectedMapLocation.lng);
+    } else if (selectedMapLocation) {
+      onCoordinates?.(selectedMapLocation.lat, selectedMapLocation.lng);
     }
     initialMapLocationRef.current = null;
     setShowMapPicker(false);
@@ -652,6 +418,7 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
                         handleUseCurrentLocation();
                       } else {
                         onChange(item.name);
+                        if (item.lat !== undefined && item.lon !== undefined) onCoordinates?.(item.lat, item.lon);
                         setIsFocused(false);
                       }
                     }}
@@ -668,7 +435,7 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
             ) : (
               value.trim() !== '' && (
                 <div className="px-4 py-3 text-xs text-blue-500 font-semibold text-center italic">
-                  Dynamic routing will compile for this query.
+                  {suggestionsLoading ? 'Searching stops...' : 'No matching stop in the transit timetable.'}
                 </div>
               )
             )}
