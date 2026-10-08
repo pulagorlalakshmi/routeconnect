@@ -15,8 +15,9 @@ import { findMultiModalRoutes } from './services/routingEngine.js';
 import { getGoogleRouteInsights } from './services/googleMapsService.js';
 import { getFlightOptions } from './services/flightService.js';
 import { getTransitStatus } from './transit/status.js';
-import { handlePlanRequest } from './transit/routing/planner.js';
+import { handleMultimodalPlanRequest } from './transit/multimodal/planMultimodal.js';
 import { getTransitNetwork } from './transit/routing/dataLoader.js';
+import { getHubMetrics, getConnectivity } from './transit/routing/hubs.js';
 import { handlePlaceSearch } from './transit/routing/placeSearch.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -291,10 +292,16 @@ app.get('/api/transit/status', (req, res) => {
   }
 });
 
-// GTFS time-aware planner (RAPTOR). Independent of the legacy /api/planner above, which is unchanged.
-app.get('/api/v2/plan', (req, res) => {
-  const { status, body } = handlePlanRequest(req.query);
-  return res.status(status).json(body);
+// Multimodal planner: GTFS buses via RAPTOR plus any configured rail / flight / private-bus sources, shortlisted for
+// diversity. Independent of the legacy /api/planner above, which is unchanged.
+app.get('/api/v2/plan', async (req, res) => {
+  try {
+    const { status, body } = await handleMultimodalPlanRequest(req.query);
+    return res.status(status).json(body);
+  } catch (error) {
+    console.error('Multimodal planning failed:', error);
+    return res.status(500).json({ error: 'Journey planning failed.' });
+  }
 });
 
 // Stop/place autocomplete for the GTFS planner: only places that exist in the timetable are suggested.
@@ -334,6 +341,7 @@ app.listen(PORT, () => {
   setImmediate(() => {
     try {
       const network = getTransitNetwork();
+      if (network) { getHubMetrics(network); getConnectivity(network); } // derived hub scores / connectivity, cached per network
       if (network) console.log(`Transit network ready: ${network.stats.patterns} patterns, ${network.stats.stops} stops (${network.stats.loadTimeMs} ms)`);
     } catch (error) {
       console.warn('Transit network warm-up skipped:', error.message);

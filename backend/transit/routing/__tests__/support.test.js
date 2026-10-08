@@ -148,13 +148,15 @@ describe('routing configuration', () => {
     const overridden = getRoutingConfig({}, {
       ROUTECONNECT_ROUTING_MIN_TRANSFER_SECONDS: '600',
       ROUTECONNECT_ROUTING_WALK_ACCESS_RADIUS_METERS: '1500',
-      ROUTECONNECT_ROUTING_FEEDER_ACCESS_RADIUS_METERS: '30000',
+      ROUTECONNECT_ROUTING_FEEDER_STAGE_RADII_METERS: '4000, 12000,30000',
+      ROUTECONNECT_ROUTING_HUB_STAGE_RADII_METERS: 'none',
       ROUTECONNECT_ROUTING_LOCAL_RIDE_SPEED_KPH: '30',
       ROUTECONNECT_ROUTING_RANKING_TRANSFER_PENALTY_SECONDS: '1200'
     });
     assert.equal(overridden.minTransferSeconds, 600);
     assert.equal(overridden.walkAccessRadiusMeters, 1500);
-    assert.equal(overridden.feederAccessRadiusMeters, 30000);
+    assert.deepEqual(overridden.feederStageRadiiMeters, [4000, 12000, 30000]);
+    assert.deepEqual(overridden.hubStageRadiiMeters, []);
     assert.equal(overridden.localRideSpeedKph, 30);
     assert.equal(overridden.ranking.transferPenaltySeconds, 1200);
     assert.equal(getRoutingConfig({}, { ROUTECONNECT_ROUTING_MIN_TRANSFER_SECONDS: 'junk' }).minTransferSeconds, ROUTING_DEFAULTS.minTransferSeconds);
@@ -164,6 +166,7 @@ describe('routing configuration', () => {
     assert.ok(ROUTING_DEFAULTS.minTransferSeconds >= 300 && ROUTING_DEFAULTS.minTransferSeconds <= 600);
     // tiered access: a short walking radius, and a much larger feeder radius reached by an estimated local ride
     assert.ok(ROUTING_DEFAULTS.walkAccessRadiusMeters >= 1000 && ROUTING_DEFAULTS.walkAccessRadiusMeters <= 1500);
-    assert.ok(ROUTING_DEFAULTS.feederAccessRadiusMeters >= 20000 && ROUTING_DEFAULTS.feederAccessRadiusMeters <= 30000);
+    assert.ok(Math.max(...ROUTING_DEFAULTS.feederStageRadiiMeters) >= 20000 && Math.max(...ROUTING_DEFAULTS.feederStageRadiiMeters) <= 30000);
+    assert.ok(Math.max(...ROUTING_DEFAULTS.hubStageRadiiMeters) <= 50000);
   });
 });

@@ -9,6 +9,10 @@ import { formatGtfsTime } from '../gtfs/time.js';
 import { CONFIDENCE, capConfidence, weakestConfidence } from '../confidence.js';
 import { effectiveConfidence } from '../datasetMetadata.js';
 import { haversineMeters } from './geo.js';
+import { providerOptionsForRide } from '../localRide/providerCoverage.js';
+import { journeyTracking, trackingOptionsFor } from '../tracking/trackingOptions.js';
+import { operatorIdentity } from '../sources/operators.js';
+import { serviceNumberFor } from '../sources/gtfs/serviceNumbers.js';
 import { estimateBusFare, estimateLocalRideFare, estimateJourneyFare } from '../fare/fareEstimator.js';
 import { getFareConfig } from '../fare/fareConfig.js';
 
@@ -117,6 +121,49 @@ function stopSequenceMeters(network, pattern, boardPos, alightPos) {
   return Math.round(meters);
 }
 
+// Leg identity, kept as separate fields so nothing is mislabelled:
+//   operatorInfo   who runs it - from the feed's agency.txt only; never inferred from a code or a place
+//   routeId/tripId the feed's own identifiers (internal; shown only as "Route <code>" when nothing better exists)
+//   serviceNumber  a PUBLIC service number, set only when the feed's code is in a format proven to be one
+//                  (see sources/gtfs/serviceNumbers.js); this is what trackers are given
+//   displayName    "APSRTC service 3846" / "APSRTC route 952054" / "Route 952054"
+// There are no vehicle registrations in the feed, so the vehicle number stays null; nothing ever invents a plate.
+export function busIdentity(route, dataset) {
+  const info = operatorIdentity(route.agencyName ?? null, { source: route.agencyName ? 'gtfs:agency.txt' : 'gtfs', confidence: 'published' });
+  const code = route.shortName ?? route.sourceId ?? null;
+  const { serviceNumber, serviceNumberSource } = serviceNumberFor(code, info.name);
+  const identity = {
+    operator: info.name,                 // display name or null ("Operator not identified")
+    operatorInfo: info,
+    routeId: route.sourceId ?? null,
+    routeCode: code,                     // the feed's route_short_name as published (e.g. "03846")
+    serviceNumber,                       // e.g. "3846", or null
+    serviceNumberSource,                 // 'tracker_verified' | 'feed_format' | null
+    displayName: serviceNumber
+      ? `${info.name} service ${serviceNumber}`
+      : `${info.name ? `${info.name} route` : 'Route'} ${code ?? ''}`.trim(),
+    vehicleNumber: null,                 // string | null
+    vehicleNumberSource: null,           // 'apsrtc' | 'external_tracker' | null
+    vehicleNumberConfidence: 'unknown'   // 'live' | 'published' | 'unknown'
+  };
+  // External tracker OPTIONS (never live data): only for a real service number; nothing is queried.
+  return { ...identity, tracking: trackingOptionsFor(identity) };
+}
+
+// ROUTE / SCHEDULE trust of a transit leg: "is this bus in our timetable, and how sure is the time?". It is derived only
+// from the dataset and the leg's own confidence, never from live-tracking status (a bus a tracker does not know is still
+// a timetable bus). "verified" / "live" are not schedule-source levels here, so they are reported as at most "published".
+const SCHEDULE_TRUST = Object.freeze({ live: 'published', verified: 'published', published: 'published', inferred: 'inferred', estimated: 'estimated', unknown: 'unknown' });
+
+export function routeTrust(dataset, legConfidence) {
+  return {
+    sourceType: 'gtfs',
+    sourceName: dataset?.name ?? null,
+    scheduleConfidence: SCHEDULE_TRUST[legConfidence] ?? 'unknown',
+    timetableBacked: true // every transit leg is a trip of the imported GTFS timetable
+  };
+}
+
 // First/last-mile leg: a walk, or a GENERIC local ride (never a named provider, never "available").
 function endLeg(kind, leg, from, to, departureSeconds, fmt, fareConfig) {
   const arrivalSeconds = departureSeconds + leg.durationSeconds;
@@ -139,6 +186,8 @@ function endLeg(kind, leg, from, to, departureSeconds, fmt, fareConfig) {
       providerIntegration: false,
       availabilityStatus: 'unknown',
       isRealtime: false,
+      // Possible ride services in this city (published city-level coverage only; never availability, never priced).
+      ...(({ city, providerOptions }) => ({ providerCity: city, providerOptions }))(providerOptionsForRide(from, to)),
       fare: estimateLocalRideFare({ roadDistanceKm: leg.distanceMeters / 1000 }, fareConfig)
     };
   }
@@ -260,6 +309,7 @@ export function assembleJourney(network, candidate, ctx) {
       routeId: route.sourceId,
       routeShortName: route.shortName,
       routeLongName: route.longName,
+      ...busIdentity(route, dataset),
       tripId: pattern.tripSourceIds[segment.trip],
       headsign: pattern.headsigns[segment.trip],
       fromStop: stopRef(network, boardStop),
@@ -275,6 +325,7 @@ export function assembleJourney(network, candidate, ctx) {
       intermediateStopCount: Math.max(0, segment.alightPos - segment.boardPos - 1),
       datasetId: dataset?.id ?? null,
       dataConfidence: confidence,
+      routeTrust: routeTrust(dataset, confidence),
       timeQuality: TIME_QUALITY_NAMES[worst],
       // Estimated range: the feed has no fares or service class. Never an exact amount.
       fare: route.mode === 'bus' ? estimateBusFare({ distanceKm: sequenceMeters / 1000 }, fareConfig) : null
@@ -324,6 +375,7 @@ export function assembleJourney(network, candidate, ctx) {
     scheduleConfidence: weakestConfidence(transitConfidences), // transit legs only
     confidence: weakestConfidence(allConfidences),             // weakest leg overall (walking / local rides are estimated)
     timeQuality: TIME_QUALITY_NAMES[worstQuality],
+    tracking: journeyTracking(legs), // live-tracking summary; independent of scheduleConfidence
     fare: null, // no PUBLISHED fare exists; estimated ranges live in fareEstimate and on each leg
     fareEstimate: estimateJourneyFare(legs, fareConfig),
     legs,

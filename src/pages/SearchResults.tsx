@@ -2,9 +2,35 @@ import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import JourneyCard from '../components/JourneyCard';
+import type { SourceReport } from '../services/planService';
+
+// One compact line saying which modes were searched, so a bus-only result is never mistaken for "no trains exist".
+const MODE_NAME: Record<string, string> = { bus: 'Buses', rail: 'Trains', air: 'Flights' };
+function sourceState(source: SourceReport): string {
+  if (source.status === 'ok') return source.count > 0 ? `${source.count} found` : 'none found';
+  if (source.status === 'not_configured') return 'no data source yet';
+  if (source.status === 'not_applicable') return 'not relevant for this trip';
+  if (source.status === 'timeout') return 'timed out';
+  return 'unavailable';
+}
+function SourcesLine({ sources }: { sources: SourceReport[] }) {
+  const parts = sources.filter(source => source.id !== 'private_bus' || source.status === 'ok');
+  const privateBus = sources.find(source => source.id === 'private_bus');
+  return (
+    <p aria-label="Sources searched" className="mt-1 text-[11px] text-[#667085]">
+      {parts.map((source, i) => (
+        <span key={source.id} title={source.message ?? source.label}>
+          {i > 0 && ' · '}
+          {source.id === 'gtfs' ? `${source.label} buses` : MODE_NAME[source.mode] ?? source.label}: {sourceState(source)}
+        </span>
+      ))}
+      {privateBus && privateBus.status !== 'ok' && <span title={privateBus.message ?? undefined}> · Private buses: no licensed source</span>}
+    </p>
+  );
+}
 import LoadingState from '../components/LoadingState';
 import { fetchPlan, PlanError } from '../services/planService';
-import type { Journey, PlanResponse } from '../services/planService';
+import type { FailureCode, Journey, PlanResponse } from '../services/planService';
 import { addMinutes, clockOf, dateOf, formatDateLabel, nowLocalHHMM, todayLocalIso } from '../utils/dateTime';
 import { SlidersHorizontal, ArrowUpDown, X, Filter, ChevronLeft } from 'lucide-react';
 
@@ -23,6 +49,21 @@ const SORT_OPTIONS: { id: SortKey; label: string }[] = [
 
 const NOTICE_HIDDEN = new Set(['SEARCH_DATE_OUTSIDE_FEED_VALIDITY', 'FEED_EXPIRED', 'NO_JOURNEY_FOUND']);
 
+// Plain-language reason for an empty result. The backend knows more; users do not need the internals.
+function noRouteMessage(code?: FailureCode): string | null {
+  switch (code) {
+    case 'NO_ACCESS_CANDIDATE':
+    case 'NO_TIMETABLE_SERVICE':
+      return 'No timetable service found from nearby transit hubs.';
+    case 'NO_DESTINATION_EGRESS':
+      return 'No destination-side transit coverage is available in the current dataset.';
+    case 'DATASET_COVERAGE_LIMITATION':
+      return 'Current dataset may not cover this area.';
+    default:
+      return null;
+  }
+}
+
 const finiteOrNull = (text: string | null) => {
   if (text === null || text.trim() === '') return null;
   const value = Number(text);
@@ -38,6 +79,7 @@ const departureSlot = (journey: Journey): 'morning' | 'afternoon' | 'evening' | 
 };
 
 const labelWeight = (journey: Journey) => {
+  if (journey.labels.includes('BEST_PATH')) return -120;
   if (journey.labels.includes('BEST_BALANCED')) return -100;
   if (journey.labels.includes('FASTEST')) return -70;
   if (journey.labels.includes('LEAST_TRANSFERS')) return -50;
@@ -156,7 +198,7 @@ export default function SearchResults() {
 
   const noticeWarnings = (plan?.warnings ?? []).filter(w => w.severity === 'warning' && !NOTICE_HIDDEN.has(w.code) && !w.code.startsWith('NO_STOPS'));
   const infoWarnings = (plan?.warnings ?? []).filter(w => w.severity === 'info');
-  const noStopReasons = (plan?.warnings ?? []).filter(w => w.code.startsWith('NO_STOPS'));
+  const noRouteDetail = noRouteMessage(plan?.diagnostics?.failureCode);
 
   const checkbox = 'w-4 h-4 rounded text-[#146B5B] border-[#D9DED9] focus:ring-[#146B5B]';
 
@@ -217,7 +259,7 @@ export default function SearchResults() {
           )}
         </div>
 
-        {loading && <LoadingState label="Searching published bus timetables..." />}
+        {loading && <LoadingState label="Searching travel options..." />}
 
         {/* Errors */}
         {!loading && error && (
@@ -263,9 +305,7 @@ export default function SearchResults() {
             <p className="mt-2 text-xl font-black text-[#1F2933]">
               {plan.message ?? 'No timetable-supported public-transport journey was found within the configured access range.'}
             </p>
-            {noStopReasons.map(reason => (
-              <p key={reason.code} className="mt-3 text-sm text-[#667085]">{reason.message}</p>
-            ))}
+            {noRouteDetail && <p className="mt-3 text-sm font-semibold text-[#1F2933]">{noRouteDetail}</p>}
             <p className="mt-3 text-sm text-[#667085] leading-relaxed max-w-md mx-auto">
               Walking and local-ride access to timetable stops were both considered. RouteConnect only shows journeys that include a published bus timetable. Try another date or time, or a nearby town or bus stand.
             </p>
@@ -303,10 +343,11 @@ export default function SearchResults() {
 
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-1">
               <div>
-                <h2 className="text-xl font-black text-[#1F2933]">Bus options ({visibleJourneys.length})</h2>
+                <h2 className="text-xl font-black text-[#1F2933]">Travel options ({visibleJourneys.length})</h2>
                 <p className="text-xs text-[#667085] mt-0.5 font-medium">
-                  From published timetables. Click "Show Details" for each stop and transfer.
+                  Complete door-to-door journeys compared across the available transport sources.
                 </p>
+                {plan.sources && plan.sources.length > 0 && <SourcesLine sources={plan.sources} />}
               </div>
               <span className="text-xs font-bold text-slate-700 bg-slate-50 border border-slate-200 px-3 py-1 rounded-full flex items-center gap-1.5 shadow-2xs self-start">
                 <span className="h-2 w-2 rounded-full bg-slate-400"></span>

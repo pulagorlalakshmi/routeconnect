@@ -10,7 +10,7 @@ export const NOW = new Date('2026-10-03T06:30:00Z');
 
 // Tests of the timetable algorithm run with local-ride feeders OFF so they stay pure walking-access tests;
 // the feeder tests opt in explicitly (see feeder.test.js).
-export const testConfig = (overrides = {}) => getRoutingConfig({ feederAccessRadiusMeters: 0, feederEgressRadiusMeters: 0, ...overrides }, {});
+export const testConfig = (overrides = {}) => getRoutingConfig({ feederStageRadiiMeters: [], hubStageRadiiMeters: [], ...overrides }, {});
 
 const toSeconds = text => parseGtfsTime(text.length === 5 ? `${text}:00` : text);
 
@@ -47,7 +47,7 @@ export function makeRecords(spec) {
 
   return {
     stops: stopNames.map(name => ({ id: stopId(name), sourceId: name, name: spec.stopNames?.[name] ?? `Stop ${name}`, lat: spec.stops[name][0], lon: spec.stops[name][1] })),
-    routes: routeNames.map((name, i) => ({ id: i + 1, sourceId: name, shortName: name, longName: `Route ${name}`, mode: 'bus' })),
+    routes: routeNames.map((name, i) => ({ id: i + 1, sourceId: name, shortName: name, longName: `Route ${name}`, mode: 'bus', agencyName: spec.agency ?? null })),
     trips: spec.trips.map((trip, i) => ({
       id: i + 1, sourceId: trip.id, routeId: routeNames.indexOf(trip.route) + 1, serviceId: trip.service, headsign: trip.headsign ?? `To ${trip.times.at(-1)[0]}`
     })),

@@ -86,7 +86,7 @@ describe('winners', () => {
 
   test('one journey can carry several labels', () => {
     const only = rankJourneys([journey('solo', 8, 9, 0)], ranking);
-    assert.deepEqual(only.journeys[0].labels.sort(), ['BEST_BALANCED', 'FASTEST', 'LEAST_TRANSFERS']);
+    assert.deepEqual(only.journeys[0].labels.sort(), ['BEST_BALANCED', 'BEST_PATH', 'FASTEST', 'LEAST_TRANSFERS']);
   });
 
   test('there is no CHEAPEST label because there is no fare data', () => {
@@ -104,7 +104,7 @@ describe('winners', () => {
   });
 
   test('empty input yields no winners', () => {
-    assert.deepEqual(rankJourneys([], ranking).winners, { fastest: null, leastTransfers: null, bestBalanced: null, lowerEstimatedCost: null });
+    assert.deepEqual(rankJourneys([], ranking).winners, { fastest: null, leastTransfers: null, bestBalanced: null, lowerEstimatedCost: null, bestPath: null });
   });
 
   test('ranking weights come from configuration defaults, not hidden constants', () => {

@@ -2,7 +2,7 @@
 // Public-transport only. There is no ride-hailing, no fare and no fabricated fallback anywhere in this contract.
 
 export type DataConfidence = 'unknown' | 'estimated' | 'inferred' | 'published' | 'verified' | 'live';
-export type JourneyLabel = 'FASTEST' | 'LEAST_TRANSFERS' | 'BEST_BALANCED' | 'LOWER_ESTIMATED_COST';
+export type JourneyLabel = 'BEST_PATH' | 'FASTEST' | 'LEAST_TRANSFERS' | 'BEST_BALANCED' | 'LOWER_ESTIMATED_COST';
 
 // Fares are ESTIMATED RANGES unless a published source exists (none does today). Never an exact made-up amount.
 export interface EstimatedFareRange {
@@ -34,6 +34,14 @@ export interface FareEstimate {
   note?: string;
   components: { legIndex: number; mode: string; kind: string | null; min: number; max: number; confidence: DataConfidence; basis: string | null }[];
   unknownComponents: { legIndex: number; mode: string; kind: string | null }[];
+}
+
+// Why a search found nothing. The UI maps the code to a short message and never shows the internals.
+export type FailureCode = 'NO_ACCESS_CANDIDATE' | 'NO_TIMETABLE_SERVICE' | 'NO_DESTINATION_EGRESS' | 'DATASET_COVERAGE_LIMITATION' | 'NO_CONNECTION';
+export interface PlanDiagnostics {
+  failureCode: FailureCode;
+  reasons: string[];
+  sameNetwork: boolean | null;
 }
 
 export interface PlaceRef {
@@ -76,7 +84,40 @@ export interface LocalRideLeg {
   providerIntegration: false;
   availabilityStatus: 'unknown';
   isRealtime: false;
+  // Ride services that publish city-level coverage where this ride happens. NOT availability: realtimeAvailable is always false.
+  providerCity?: string | null;
+  providerOptions?: { name: string; coverage: 'published_city_coverage'; realtimeAvailable: false }[];
   fare: LegFare | null;
+}
+
+export type TrackingStatus = 'verified' | 'options_available' | 'not_found';
+export type ScheduleTrust = 'published' | 'inferred' | 'estimated' | 'unknown';
+
+export interface LegTracking {
+  serviceNumber: string;
+  vehicleNumber: string | null;
+  // verified: a tracker was seen to recognise this service; options_available: trackers exist, this service is not
+  // (fully) checked - the normal case; not_found: every supported tracker was checked and none recognised it.
+  status?: TrackingStatus;
+  // recognized: true / false from a manual check, null when that tracker was not checked.
+  providers: { id: string; availableAsExternalOption: boolean; recognized?: boolean | null }[];
+  preferredProvider?: string | null;
+  checkedOn?: string | null;
+}
+
+export interface RouteTrust {
+  sourceType: 'gtfs' | 'rail_timetable' | 'flight_api' | 'other';
+  sourceName: string | null;
+  scheduleConfidence: ScheduleTrust;
+  timetableBacked: true;
+}
+
+export type OperatorType = 'state_transport' | 'private_bus' | 'rail' | 'airline' | 'local_transport' | 'unknown';
+export interface OperatorInfo {
+  name: string | null;      // from the data source only; null = "Operator not identified"
+  type: OperatorType;
+  source: string;
+  confidence: 'verified' | 'published' | 'inferred' | 'unknown';
 }
 
 export interface TransitLeg {
@@ -84,16 +125,35 @@ export interface TransitLeg {
   routeId: string;
   routeShortName: string | null;
   routeLongName: string | null;
+  operator?: string | null;          // operator display name from the data source, or null
+  operatorInfo?: OperatorInfo;
+  routeCode?: string | null;         // the source's own route code as published (e.g. GTFS "03846")
+  // A PUBLIC service number (e.g. "3846"), set only when the code is proven to be one. NOT a vehicle registration.
+  serviceNumber?: string | null;
+  serviceNumberSource?: 'tracker_verified' | 'feed_format' | null;
+  displayName?: string | null;       // "APSRTC service 3846", "APSRTC route 952054", "12711 Pinakini Express", ...
+  trainNumber?: string | null;
+  trainName?: string | null;
+  flightNumber?: string | null;
+  daysOfOperation?: string[] | null;
+  intermediateStops?: string[] | null;
+  vehicleNumber?: string | null;     // only ever set from a trustworthy source; the GTFS feed has none, so normally null
+  vehicleNumberSource?: 'apsrtc' | 'external_tracker' | null;
+  vehicleNumberConfidence?: 'live' | 'published' | 'unknown';
+  // LIVE-TRACKING trust, from manual tracker checks. Never live data: there is deliberately no liveAvailable field.
+  tracking?: LegTracking | null;
+  // ROUTE / SCHEDULE trust: independent of tracking. Every transit leg is a timetable trip.
+  routeTrust?: RouteTrust;
   tripId: string;
   headsign: string | null;
   fromStop: PlaceRef;
   toStop: PlaceRef;
   departureTime: string;
   arrivalTime: string;
-  gtfsDepartureTime: string;
-  gtfsArrivalTime: string;
+  gtfsDepartureTime?: string;
+  gtfsArrivalTime?: string;
   serviceDate: string;
-  scheduleBasis: 'published_calendar' | 'extrapolated_weekly_pattern';
+  scheduleBasis: 'published_calendar' | 'extrapolated_weekly_pattern' | 'published_timetable';
   durationSeconds: number;
   intermediateStopCount: number;
   distanceMeters?: number;
@@ -108,6 +168,19 @@ export type Leg = WalkLeg | LocalRideLeg | TransitLeg;
 export const isWalkLeg = (leg: Leg): leg is WalkLeg => leg.mode === 'walk';
 export const isLocalRideLeg = (leg: Leg): leg is LocalRideLeg => leg.mode === 'local_ride';
 export const isTransitLeg = (leg: Leg): leg is TransitLeg => leg.mode !== 'walk' && leg.mode !== 'local_ride';
+
+export type RatingParameterKey = 'time' | 'cost' | 'transfers' | 'firstLastMile' | 'schedule' | 'tracking' | 'convenience';
+export type RatingLabel = 'Excellent' | 'Very Good' | 'Good' | 'Fair' | 'Limited';
+
+// Best Path Rating (0-10), computed by the backend from the journey data. A parameter score of null means N/A.
+export interface PathRating {
+  score: number;
+  label: RatingLabel;
+  summary: string;
+  parameters: Record<RatingParameterKey, { score: number | null; weight: number }>;
+  reasons: { type: 'positive' | 'caution'; metric: RatingParameterKey; text: string }[];
+  comparedWith: number;
+}
 
 export interface Journey {
   id: string;
@@ -127,7 +200,12 @@ export interface Journey {
   localRideCount: number;
   fare: null; // a PUBLISHED fare; none exists
   fareEstimate: FareEstimate | null;
+  rating?: PathRating;
   generalizedCostSeconds?: number;
+  primaryMode?: 'bus' | 'train' | 'flight' | 'other';
+  modes?: string[];
+  // Live-tracking summary over the APSRTC bus legs (independent of scheduleConfidence).
+  tracking?: { busLegs: number; verifiedLegs: number; notFoundLegs: number; allVerified: boolean };
   legs: Leg[];
 }
 
@@ -146,7 +224,20 @@ export interface ResolvedPlace {
   stopCount: number;
 }
 
+export interface SourceReport {
+  id: string;
+  label: string;
+  mode: string;
+  status: 'ok' | 'not_configured' | 'not_applicable' | 'timeout' | 'error';
+  message: string | null;
+  count: number;
+  ms: number;
+}
+
 export interface PlanResponse {
+  // Which transport sources were searched and what happened (ok / not_configured / not_applicable / timeout / error).
+  sources?: SourceReport[];
+  shortlist?: { candidates: number; afterDedupe: number; afterPareto: number; clusters: number; returned: number; modes?: Record<string, number> };
   query: { fromLat: number; fromLng: number; toLat: number; toLng: number; date: string; time: string; maxTransfers: number; windowMinutes: number; timezone: string };
   dataset: {
     name: string | null;
@@ -164,7 +255,9 @@ export interface PlanResponse {
   datasetWarning: string | null;
   warnings: PlanWarning[];
   access?: { walkRadiusMeters: number; feederRadiusMeters: number; walkOriginStops: number; walkDestinationStops: number; usedLocalRide: boolean };
-  winners: { fastest: string | null; leastTransfers: string | null; bestBalanced: string | null; lowerEstimatedCost?: string | null };
+  search?: { windowRequestedMinutes: number; windowUsedMinutes: number | null; windowExpanded: boolean; stageUsed: string | null; radiusUsedMeters: number | null };
+  diagnostics?: PlanDiagnostics | null;
+  winners: { fastest: string | null; leastTransfers: string | null; bestBalanced: string | null; lowerEstimatedCost?: string | null; bestPath?: string | null };
   journeys: Journey[];
   performance: { queryTimeMs: number };
 }

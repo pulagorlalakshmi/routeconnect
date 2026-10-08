@@ -11,6 +11,8 @@ export const TIME_QUALITY_NAMES = Object.freeze(['exact', 'approximate', 'interp
 export const TIME_QUALITY_CODE = Object.freeze({ exact: 0, approximate: 1, interpolated: 2, unknown: 3 });
 
 export const JOURNEY_LABELS = Object.freeze({
+  // Highest Best Path Rating of the search (rating/pathRating.js). One journey, unless scores tie exactly.
+  BEST_PATH: 'BEST_PATH',
   FASTEST: 'FASTEST',
   LEAST_TRANSFERS: 'LEAST_TRANSFERS',
   BEST_BALANCED: 'BEST_BALANCED',

@@ -11,8 +11,9 @@ import { performance } from 'node:perf_hooks';
 import { getRoutingConfig } from './config.js';
 import { getTransitNetwork } from './dataLoader.js';
 import { parsePlanQuery } from './planQuery.js';
-import { findWalkLegs } from './accessEgress.js';
-import { selectFeederCandidates } from './feeder.js';
+import { buildAccessStages, createServiceCounter, selectFeederCandidates, selectWalkCandidates } from './feeder.js';
+import { getConnectivity } from './hubs.js';
+import { analyseReach, buildWindows, diagnoseNoRoute } from './diagnostics.js';
 import { getFareConfig } from '../fare/fareConfig.js';
 import { createWorkspace, runRaptor } from './raptor.js';
 import { assembleJourney, extractRunCandidates } from './journeyBuilder.js';
@@ -99,17 +100,20 @@ function datasetSummary(network, query, config, now) {
   };
 }
 
-// How this works (tiered access, complete-journey selection):
+// How this works (progressive access search, complete-journey selection):
 //
-//   Tier 1  WALK     candidates: stops within walkAccessRadius / walkEgressRadius (nearest N).
-//   Tier 2  FEEDER   candidates: stops beyond the walking radius, up to feederAccessRadius / feederEgressRadius,
-//                    scored from the timetable and bounded (see feeder.js). Reached by an ESTIMATED generic local ride.
+//   Stage 0  WALK     stops within the walking radius (nearest N that have service).
+//   Stage k  FEEDER   stops beyond walking distance reached by an ESTIMATED generic local ride, with a radius that grows
+//                     stage by stage (feederStageRadiiMeters, then hubStageRadiiMeters for strong hubs only). Candidates
+//                     are chosen on BOTH sides of the journey from the timetable (hubScore, progress, ride time) and are
+//                     bounded; see feeder.js.
 //
-// Each tier runs RAPTOR ONCE per departure time with ALL of its candidates as sources/targets, so the boarding and
-// alighting stops are chosen by the best COMPLETE door-to-door journey, never by "nearest stop". Tier 2 contains the
-// tier-1 candidates as well. A ride-assisted journey is offered only when no walk-only journey exists in the window or
-// when it arrives at least feederMinimumGainSeconds earlier than the best walk-only one: a local ride has to earn its
-// place. Every journey contains at least one GTFS transit leg (rounds >= 1); a ride-only journey cannot exist.
+// Every stage runs RAPTOR once per departure time with ALL of its candidates as sources/targets, so the boarding and
+// alighting stops are chosen by the best COMPLETE door-to-door journey, never by "nearest stop". The search stops at the
+// first stage whose journeys are acceptable (so large radii are only used when needed). If the requested time window yields
+// nothing, it is widened in configured steps. A journey with more local rides must earn its place by arriving clearly
+// earlier than the best journey with fewer; rides may not dominate a journey. Every journey contains at least one GTFS transit
+// leg (rounds >= 1); a ride-only journey cannot exist.
 export function planJourneys(network, query, { config = getRoutingConfig(), fareConfig = getFareConfig(), now = new Date(), resolved = null } = {}) {
   const startedAt = performance.now();
   const dataset = network.dataset ?? {};
@@ -143,41 +147,18 @@ export function planJourneys(network, query, { config = getRoutingConfig(), fare
   const serviceDays = buildServiceDays(network, query, config);
   const anchorDayNumber = isoToDayNumber(query.date);
   const windowStart = query.timeSeconds;
-  const windowEnd = windowStart + query.windowMinutes * 60;
   const horizonSeconds = config.maxJourneyHours * 3600;
-
-  // ---- Tier 1: walking candidates ----
+  const stages = buildAccessStages(config);
+  const windows = buildWindows(query.windowMinutes, config);
+  const maxRadiusMeters = stages.at(-1).radiusMeters;
+  const components = getConnectivity(network).component;
   const walking = { walkSpeedMetersPerSecond: config.walkSpeedMetersPerSecond, walkDetourFactor: config.walkDetourFactor };
-  const walkAccess = findWalkLegs(network.stopIndex, origin, { ...walking, radiusMeters: config.walkAccessRadiusMeters, maxStops: config.maxWalkAccessCandidates });
-  const walkEgress = findWalkLegs(network.stopIndex, destination, { ...walking, radiusMeters: config.walkEgressRadiusMeters, maxStops: config.maxWalkEgressCandidates });
 
-  // ---- Tier 2: bounded local-ride candidates beyond walking distance ----
-  const feederBase = { serviceDays, windowStart, windowEnd, horizonSeconds, config };
-  const feederAccess = selectFeederCandidates(network, origin, {
-    ...feederBase, role: 'access', radiusMeters: config.feederAccessRadiusMeters, excludeWithinMeters: config.walkAccessRadiusMeters,
-    maxCandidates: config.maxFeederCandidates, otherPoint: destination
-  });
-  const feederEgress = selectFeederCandidates(network, destination, {
-    ...feederBase, role: 'egress', radiusMeters: config.feederEgressRadiusMeters, excludeWithinMeters: config.walkEgressRadiusMeters,
-    maxCandidates: config.maxFeederCandidates, otherPoint: origin
-  });
-
-  const describe = leg => ({
-    stopId: network.stopSourceIds[leg.stopIdx],
-    name: network.stopNames[leg.stopIdx],
-    roadDistanceMeters: leg.distanceMeters,
-    estimatedMinutes: Math.round(leg.durationSeconds / 60),
-    servicesInWindow: leg.hub?.services ?? null
-  });
-  const accessInfo = {
-    walkRadiusMeters: config.walkAccessRadiusMeters,
-    feederRadiusMeters: Math.max(config.feederAccessRadiusMeters, config.feederEgressRadiusMeters),
-    walkOriginStops: walkAccess.length,
-    walkDestinationStops: walkEgress.length,
-    feederOriginCandidates: feederAccess.map(describe),
-    feederDestinationCandidates: feederEgress.map(describe),
-    usedLocalRide: false
-  };
+  // Where can each end possibly reach? (Served stops within the largest radius, and which timetable networks they belong to.)
+  const originReach = analyseReach(network, origin, Math.max(maxRadiusMeters, config.walkAccessRadiusMeters));
+  const destinationReach = analyseReach(network, destination, Math.max(maxRadiusMeters, config.walkEgressRadiusMeters));
+  const sharedComponents = new Set([...originReach.components].filter(c => destinationReach.components.has(c)));
+  const allowedComponents = sharedComponents.size > 0 ? sharedComponents : null;
 
   const performanceBlock = {
     networkLoadTimeMs: network.loadInfo?.loadTimeMs ?? network.stats.buildTimeMs,
@@ -189,21 +170,54 @@ export function planJourneys(network, query, { config = getRoutingConfig(), fare
     journeysGenerated: 0,
     journeysAfterDedupe: 0,
     journeysReturned: 0,
-    accessStops: walkAccess.length + feederAccess.length,
-    egressStops: walkEgress.length + feederEgress.length
+    accessStops: 0,
+    egressStops: 0
   };
-  const noWinners = { fastest: null, leastTransfers: null, bestBalanced: null, lowerEstimatedCost: null };
+  const search = {
+    windowRequestedMinutes: query.windowMinutes,
+    windowsTriedMinutes: [],
+    windowUsedMinutes: null,
+    windowExpanded: false,
+    maxRadiusMeters,
+    stageUsed: null,
+    radiusUsedMeters: null,
+    stages: []
+  };
+  let finalAccess = { walk: [], feeder: [], all: [] };
+  let finalEgress = { walk: [], feeder: [], all: [] };
+  const noWinners = { fastest: null, leastTransfers: null, bestBalanced: null, lowerEstimatedCost: null, bestPath: null };
+  let diagnostics = null;
+
+  const describe = leg => ({
+    stopId: network.stopSourceIds[leg.stopIdx],
+    name: network.stopNames[leg.stopIdx],
+    roadDistanceMeters: leg.distanceMeters,
+    estimatedMinutes: Math.round(leg.durationSeconds / 60),
+    servicesInWindow: leg.hub?.services ?? null,
+    hubStrength: leg.hub?.strength ?? null
+  });
   const finish = (journeys, winners = noWinners) => {
     performanceBlock.queryTimeMs = round1(performance.now() - startedAt);
     performanceBlock.journeysReturned = journeys.length;
-    accessInfo.usedLocalRide = journeys.some(journey => journey.localRideCount > 0);
+    performanceBlock.accessStops = finalAccess.all.length;
+    performanceBlock.egressStops = finalEgress.all.length;
     if (journeys.length > 0 && !journeys.some(journey => journey.fareEstimate)) {
       warn('NO_FARE_DATA', 'info', 'Fares are unavailable for these journeys.');
     }
     return {
       ...baseResponse,
       resolved,
-      access: accessInfo,
+      access: {
+        walkRadiusMeters: config.walkAccessRadiusMeters,
+        feederRadiusMeters: search.radiusUsedMeters ?? maxRadiusMeters,
+        walkOriginStops: finalAccess.walk.length,
+        walkDestinationStops: finalEgress.walk.length,
+        feederOriginCandidates: finalAccess.feeder.map(describe),
+        feederDestinationCandidates: finalEgress.feeder.map(describe),
+        usedLocalRide: journeys.some(journey => journey.localRideCount > 0)
+      },
+      search,
+      diagnostics,
       message: journeys.length === 0 ? NO_ROUTE_MESSAGE : null,
       datasetWarning,
       warnings,
@@ -217,26 +231,42 @@ export function planJourneys(network, query, { config = getRoutingConfig(), fare
   if (crowFlies < config.directWalkWarningMeters) {
     warn('ORIGIN_DESTINATION_WALKABLE', 'info', `Origin and destination are only ${Math.round(crowFlies)} m apart; walking may be quicker than any transit journey.`);
   }
-  const accessReach = Math.max(config.walkAccessRadiusMeters, config.feederAccessRadiusMeters);
-  const egressReach = Math.max(config.walkEgressRadiusMeters, config.feederEgressRadiusMeters);
-  if (walkAccess.length + feederAccess.length === 0) {
-    warn('NO_STOPS_NEAR_ORIGIN', 'warning', `No usable transit stop within ${accessReach} m of the origin.`);
+
+  const widestWindowEnd = windowStart + windows.at(-1) * 60;
+  const failWith = () => {
+    if (search.windowsTriedMinutes.length === 0) search.windowsTriedMinutes = [windows[0]];
+    diagnostics = diagnoseNoRoute(network, {
+      config, counter: createServiceCounter(network, serviceDays), windowStart, windowEnd: widestWindowEnd, horizonSeconds,
+      originReach, destinationReach, sharedComponents, finalAccess: finalAccess.all, finalEgress: finalEgress.all,
+      searchedWindowsMinutes: search.windowsTriedMinutes, maxRadiusMeters
+    });
+  };
+
+  // Cheap, exact early exits: nothing in range, or the two areas are not connected by any service at all.
+  if (originReach.servedCount === 0) {
+    warn('NO_STOPS_NEAR_ORIGIN', 'warning', `No usable transit stop within ${Math.round(maxRadiusMeters)} m of the origin.`);
     warn('NO_JOURNEY_FOUND', 'warning', 'Walking and local-ride access were both tried; neither reached a stop with usable service.');
+    failWith();
     return finish([]);
   }
-  if (walkEgress.length + feederEgress.length === 0) {
-    warn('NO_STOPS_NEAR_DESTINATION', 'warning', `No usable transit stop within ${egressReach} m of the destination.`);
+  if (destinationReach.servedCount === 0) {
+    warn('NO_STOPS_NEAR_DESTINATION', 'warning', `No usable transit stop within ${Math.round(maxRadiusMeters)} m of the destination.`);
     warn('NO_JOURNEY_FOUND', 'warning', 'Walking and local-ride egress were both tried; neither reached a stop with usable service.');
+    failWith();
+    return finish([]);
+  }
+  if (sharedComponents.size === 0) {
+    warn('NO_JOURNEY_FOUND', 'warning', 'No timetable service in the dataset connects the stops near the origin with the stops near the destination.');
+    failWith();
     return finish([]);
   }
 
-  // ---- Range search: RAPTOR once per departure time, all candidates of a tier at once ----
+  // ---- Range search: RAPTOR once per departure time, all candidates of a stage at once ----
   const workspace = createWorkspace(network, query.maxTransfers + 2);
-  const searchTier = (accessLegs, egressLegs) => {
-    const unique = new Map();
-    const fromEarliestRun = new Set();
-    if (accessLegs.length === 0 || egressLegs.length === 0) return { unique, fromEarliestRun };
+  const pool = new Map();           // journey id -> journey (all stages / windows so far)
+  const fromEarliestRun = new Set();
 
+  const searchStage = (accessLegs, egressLegs, windowEnd) => {
     const accessByStop = new Map(accessLegs.map(leg => [leg.stopIdx, leg]));
     const egressByStop = new Map(egressLegs.map(leg => [leg.stopIdx, leg]));
     const egressSeconds = new Int32Array(network.stopCount).fill(-1);
@@ -246,8 +276,7 @@ export function planJourneys(network, query, { config = getRoutingConfig(), fare
       accessByStop, egressByStop, egressLegs, datasetConfidence: info.effectiveConfidence
     };
 
-    const departures = candidateDepartures(network, accessLegs, serviceDays, windowStart, windowEnd, config.maxRangeSearches);
-    for (const departure of departures) {
+    for (const departure of candidateDepartures(network, accessLegs, serviceDays, windowStart, windowEnd, config.maxRangeSearches)) {
       const run = runRaptor(network, {
         accessLegs, departureTime: departure, maxTransfers: query.maxTransfers, serviceDays, egressSeconds,
         horizonTime: departure + horizonSeconds, boardingBufferSeconds: config.boardingBufferSeconds
@@ -259,54 +288,134 @@ export function planJourneys(network, query, { config = getRoutingConfig(), fare
       for (const candidate of extractRunCandidates(network, run, ctx)) {
         const journey = assembleJourney(network, candidate, ctx);
         performanceBlock.journeysGenerated++;
-        // A local ride is a FEEDER: the bus must cover clearly more ground than the ride, or the "journey" is really a taxi trip.
-        if (journey.localRideCount > 0 && journey.transitDistanceMeters < config.minTransitToRideRatio * journey.localRideDistanceMeters) continue;
-        if (!unique.has(journey.id)) unique.set(journey.id, journey);
+        if (journey.localRideCount > 0) {
+          // A local ride is a FEEDER, never the main event. HARD rule: the bus must cover at least as much ground as the rides,
+          // or the "journey" is really a taxi trip with a bus hop in the middle. SOFT rules: rides should not make up most of
+          // the duration, nor exceed the direct door-to-door distance (beyond a small allowance); ride-heavy journeys are used only when nothing better exists (see selectJourneys).
+          if (journey.transitDistanceMeters < config.minTransitToRideRatio * journey.localRideDistanceMeters) continue;
+          journey._rideHeavy = journey.localRideDurationSeconds > config.maxLocalRideDurationShare * journey.totalDurationSeconds
+            || journey.localRideDistanceMeters > Math.max(config.localRideAllowanceMeters, config.maxLocalRideToDirectRatio * crowFlies);
+        }
+        if (!pool.has(journey.id)) pool.set(journey.id, journey);
         if (departure === windowStart) fromEarliestRun.add(journey.id);
       }
     }
-    return { unique, fromEarliestRun };
   };
 
-  const walkOnly = searchTier(walkAccess, walkEgress);
-  const withRides = (feederAccess.length > 0 || feederEgress.length > 0)
-    ? searchTier([...walkAccess, ...feederAccess], [...walkEgress, ...feederEgress])
-    : { unique: new Map(), fromEarliestRun: new Set() };
-  performanceBlock.journeysAfterDedupe = new Set([...walkOnly.unique.keys(), ...withRides.unique.keys()]).size;
-
-  // Walk-only journeys come first; a ride-assisted journey must earn its place (see header comment).
-  const inWindow = journey => journey._departureSeconds <= windowEnd;
-  const pool = (walkList, otherList) => {
-    const reference = walkList.length ? Math.min(...walkList.map(j => j._arrivalSeconds)) : Infinity;
-    const out = new Map(walkList.map(j => [j.id, j]));
-    for (const journey of otherList) {
-      const earnsPlace = journey.localRideCount === 0 || reference === Infinity || journey._arrivalSeconds <= reference - config.feederMinimumGainSeconds;
-      if (earnsPlace) out.set(journey.id, journey);
+  // Walk-first selection across ride counts: a journey with more local rides is kept only if no journey with fewer rides
+  // exists, or it arrives at least feederMinimumGainSeconds before the best one with fewer.
+  const selectJourneys = all => {
+    const strict = all.filter(journey => !journey._rideHeavy);
+    const journeys = strict.length > 0 ? strict : all; // ride-heavy journeys only as a last resort
+    const byRides = new Map();
+    for (const journey of journeys) {
+      const list = byRides.get(journey.localRideCount) ?? [];
+      list.push(journey);
+      byRides.set(journey.localRideCount, list);
     }
-    return [...out.values()];
+    const kept = [];
+    let reference = Infinity;
+    for (const rides of [...byRides.keys()].sort((a, b) => a - b)) {
+      const earned = byRides.get(rides).filter(journey => reference === Infinity || journey._arrivalSeconds <= reference - config.feederMinimumGainSeconds);
+      kept.push(...earned);
+      for (const journey of earned) reference = Math.min(reference, journey._arrivalSeconds);
+    }
+    return kept;
   };
+  const inWindow = windowEnd => [...pool.values()].filter(journey => journey._departureSeconds <= windowEnd);
 
-  let candidates = pool(
-    [...walkOnly.unique.values()].filter(inWindow),
-    [...withRides.unique.values()].filter(inWindow)
-  );
+  const idealSeconds = crowFlies / ((config.idealBusKph * 1000) / 3600);
+  const acceptableSeconds = config.acceptableDurationFactor * idealSeconds + config.acceptableBaseSeconds;
+  // "Acceptable" is judged on what the traveller experiences: time from the requested departure to arrival, including any wait.
+  const isAcceptable = journeys => journeys.some(journey => !journey._rideHeavy && journey._arrivalSeconds - windowStart <= acceptableSeconds);
+
+  let candidates = [];
+  let bestArrival = Infinity;   // best arrival so far, and the stage that first reached it (diminishing-returns stop rule)
+  let bestStage = null;
+  let stagnantStages = 0;
+  let usedWindowEnd = windowStart + windows[0] * 60;
+  progressive:
+  for (let w = 0; w < windows.length; w++) {
+    const windowEnd = windowStart + windows[w] * 60;
+    usedWindowEnd = windowEnd;
+    search.windowsTriedMinutes.push(windows[w]);
+    const counter = createServiceCounter(network, serviceDays);
+    const stageList = w === 0 ? stages : [stages.at(-1)]; // a wider window re-tries once, with the full candidate set
+    let previousKey = null;
+
+    for (const stage of stageList) {
+      const side = (role, point, other) => {
+        const walk = selectWalkCandidates(network, point, {
+          radiusMeters: role === 'access' ? config.walkAccessRadiusMeters : config.walkEgressRadiusMeters,
+          maxCandidates: role === 'access' ? config.maxWalkAccessCandidates : config.maxWalkEgressCandidates,
+          allowedComponents, components, config: walking
+        });
+        const feeder = selectFeederCandidates(network, point, {
+          role, stage, otherPoint: other, counter, windowStart, windowEnd, horizonSeconds, config, allowedComponents, components
+        });
+        return { walk, feeder, all: [...walk, ...feeder] };
+      };
+      const access = side('access', origin, destination);
+      const egress = side('egress', destination, origin);
+      finalAccess = access;
+      finalEgress = egress;
+
+      const key = `${access.all.map(leg => leg.stopIdx).join(',')}|${egress.all.map(leg => leg.stopIdx).join(',')}`;
+      const record = { name: stage.name, radiusMeters: stage.radiusMeters, windowMinutes: windows[w], accessCandidates: access.all.length, egressCandidates: egress.all.length, searched: false, acceptable: false };
+      search.stages.push(record);
+      if (access.all.length === 0 || egress.all.length === 0 || key === previousKey) continue; // nothing new to search at this stage
+      previousKey = key;
+
+      searchStage(access.all, egress.all, windowEnd);
+      record.searched = true;
+      candidates = selectJourneys(inWindow(windowEnd));
+      record.acceptable = isAcceptable(candidates);
+      if (candidates.length > 0) {
+        const best = Math.min(...candidates.map(journey => journey._arrivalSeconds));
+        if (best <= bestArrival - config.feederMinimumGainSeconds) { bestStage = stage; stagnantStages = 0; }
+        else stagnantStages++;
+        bestArrival = Math.min(bestArrival, best);
+      }
+      if (record.acceptable) {
+        search.stageUsed = stage.name;
+        search.radiusUsedMeters = stage.radiusMeters;
+        break progressive;
+      }
+      // Stop widening when it has stopped paying off, or the total search budget is spent: a wider radius cannot create
+      // timetable service that does not exist.
+      if (candidates.length > 0 && (stagnantStages >= config.stageStagnationLimit || performanceBlock.rangeSearches >= config.maxTotalRangeSearches)) break;
+    }
+    if (candidates.length > 0) break; // something usable at this window: do not widen further
+  }
+  search.windowUsedMinutes = Math.round((usedWindowEnd - windowStart) / 60);
+  search.windowExpanded = search.windowUsedMinutes > query.windowMinutes;
+  if (candidates.length > 0 && search.stageUsed === null) {
+    // Best available, though not "acceptable": report the stage that produced the best journey.
+    const last = bestStage ?? [...search.stages].reverse().find(stage => stage.searched);
+    search.stageUsed = last?.name ?? null;
+    search.radiusUsedMeters = last?.radiusMeters ?? null;
+  }
+  performanceBlock.journeysAfterDedupe = pool.size;
+
   if (candidates.length === 0) {
-    candidates = pool(
-      [...walkOnly.unique.values()].filter(j => walkOnly.fromEarliestRun.has(j.id)),
-      [...withRides.unique.values()].filter(j => withRides.fromEarliestRun.has(j.id))
-    );
+    candidates = selectJourneys([...pool.values()].filter(journey => fromEarliestRun.has(journey.id)));
     if (candidates.length > 0) {
-      warn('NO_DEPARTURE_IN_WINDOW', 'warning', 'No journey leaves inside the requested time window; showing the earliest available journey after it.');
+      warn('NO_DEPARTURE_IN_WINDOW', 'warning', 'No journey leaves inside the searched time window; showing the earliest available journey after it.');
     }
   }
   if (candidates.length === 0) {
     warn('NO_JOURNEY_FOUND', 'warning',
-      `Walking${feederAccess.length + feederEgress.length > 0 ? ' and local-ride access' : ''} to timetable stops was tried; no journey within ${query.maxTransfers} transfer(s) was found for this date and time.`);
+      `Walking${maxRadiusMeters > config.walkAccessRadiusMeters ? ' and local-ride access' : ''} to timetable stops was tried; no journey within ${query.maxTransfers} transfer(s) was found for this date and time.`);
+    failWith();
     return finish([]);
   }
+  if (search.windowExpanded) {
+    warn('SEARCH_WINDOW_EXPANDED', 'info', `Few services run in the requested window, so the search was widened to ${search.windowUsedMinutes / 60} hours.`);
+  }
 
+  const rideHeavy = candidates.some(journey => journey._rideHeavy);
   const ranked = rankJourneys(candidates, config.ranking);
-  const journeys = ranked.journeys.map(({ _departureSeconds, _arrivalSeconds, ...journey }) => journey);
+  const journeys = ranked.journeys.map(({ _departureSeconds, _arrivalSeconds, _rideHeavy, ...journey }) => journey);
 
   if (journeys.some(journey => journey.timeQuality !== 'exact')) {
     warn('APPROXIMATE_TIMES', 'info', 'Stop times in this dataset are approximate (not exact timepoints); allow some margin.');
@@ -316,6 +425,9 @@ export function planJourneys(network, query, { config = getRoutingConfig(), fare
   }
   if (journeys.some(journey => journey.localRideCount > 0)) {
     warn('LOCAL_RIDE_ESTIMATED', 'info', 'Local ride legs are estimates connecting you to a timetable bus. No ride provider is connected: availability is not verified, and duration and fare are approximate.');
+  }
+  if (rideHeavy) {
+    warn('LOCAL_RIDE_HEAVY', 'info', 'Local rides make up much of this journey: no timetable alternative with shorter rides was found in the dataset.');
   }
   if (journeys.some(journey => journey.fareEstimate)) {
     warn('FARE_ESTIMATED', 'info', 'Fares are approximate ranges estimated from route distance, not published fares. Bus service class is not in the dataset; actual fares may vary.');

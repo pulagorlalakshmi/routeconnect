@@ -16,14 +16,43 @@ export const ROUTING_DEFAULTS = Object.freeze({
   directWalkWarningMeters: 1000,    // below this the trip is probably walkable
 
   // ---- First / last mile by generic local ride (auto / cab). ESTIMATED, never provider-backed ----
-  // Tier 2: only stops BEYOND the walking radius, within this radius, are considered (0 disables local rides).
-  feederAccessRadiusMeters: 25000,
-  feederEgressRadiusMeters: 25000,
-  maxFeederCandidates: 8,           // bounded candidate set per side (RAPTOR runs ONCE with all candidates, not per candidate)
-  feederClusterRadiusMeters: 300,   // candidates this close are one hub: keep only the best-served stop
-  feederMinServicesInWindow: 2,     // a hub needs at least this many usable departures/arrivals in the search window
-  feederMinimumGainSeconds: 900,    // a ride-assisted journey must beat the best walk-only arrival by this much
-  minTransitToRideRatio: 1.0,       // straight-line bus distance must be at least this x the local-ride distance
+  // Progressive access search (both ends of the journey). Stage 0 is walking only; each following stage widens the radius
+  // within which stops are reachable by an estimated local ride. The search STOPS at the first stage that yields an
+  // acceptable journey, so the largest radius is only used when it is actually needed. An empty list disables rides.
+  feederStageRadiiMeters: [5000, 10000, 20000, 30000],  // local-feeder stages (stops chosen by timetable usefulness)
+  hubStageRadiiMeters: [40000, 50000],                  // extended stages: only strong hubs are considered beyond the feeder range
+  maxFeederCandidates: 10,          // local-feeder candidates per side (RAPTOR runs ONCE per stage with all candidates)
+  maxHubCandidates: 6,              // extra strong-hub candidates per side in the extended stages
+  hubMinStrength: 0.7,              // extended stages: a stop must rank in the top 30% of the network (hub strength 0..1)
+  feederClusterRadiusMeters: 300,   // candidates this close are one hub: keep only the best-scoring stop
+  feederMinServicesInWindow: 1,     // a candidate needs at least this many usable departures/arrivals in the search window (1: sparse areas count)
+  feederMinimumGainSeconds: 900,    // a journey with more local rides must arrive this much earlier than the best with fewer
+  minTransitToRideRatio: 1.0,       // plausibility: net bus progress must be at least this x the total straight-line ride distance
+  maxLocalRideToDirectRatio: 1.0,   // plausibility: rides alone may not cover more than this x the direct distance...
+  localRideAllowanceMeters: 5000,   // ...unless they total no more than this (short rides are always fine)
+  hubRideScaleSeconds: 1800,        // candidate score halves for every this-many seconds of local ride to reach it
+  // ---- Journey plausibility (plausibility.js): limits blend from the SHORT-trip value to the LONG-trip value ----
+  plausibilityEnabled: true,        // false: return every timetable-valid journey (diagnostics / "raw" coverage measurement)
+  shortTripMeters: 20000,           // direct distance at or below which the strict (short) limits apply
+  longTripMeters: 100000,           // direct distance at or above which the loose (long, intercity) limits apply
+  detourMinDirectMeters: 1000,      // direct distances below this are treated as this long when forming distance ratios
+  maxDistanceDetourShort: 2.0,      // path length / direct distance
+  maxDistanceDetourLong: 3.0,
+  maxDurationFactorShort: 3.0,      // duration <= detourDurationBaseSeconds + factor x (direct distance at idealBusKph)
+  maxDurationFactorLong: 5.0,
+  detourDurationBaseSeconds: 3600,
+  maxFeederShareShort: 0.5,         // share of door-to-door time spent in estimated local rides
+  maxFeederShareLong: 0.6,
+  maxTransfersShortTrip: 1,         // transfers allowed on a short trip (long trips may use the query's maximum)
+  minTransitSeconds: 300,           // with local rides, the bus part must be at least this long...
+  minTransitShareOfDirect: 0.25,    // ...and its net progress at least this share of the direct distance
+  maxExcursionShareShort: 0.6,      // how far off the origin-destination line a stop may lie: (d_origin + d_dest - direct)
+  maxExcursionShareLong: 1.2,       //   <= allowance + share x direct distance
+  excursionAllowanceMeters: 3000,
+  acceptableMaxFeederShare: 0.5,    // stopping rule: a journey this ride-heavy is not "good enough" to stop widening the search
+  idealBusKph: 40,                  // a journey is "acceptable" when no longer than factor x (straight line / this) + base
+  acceptableDurationFactor: 2.5,
+  acceptableBaseSeconds: 3600,
   localRideDistanceFactor: 1.35,    // straight line -> road distance
   localRideSpeedKph: 25,            // expected average speed of a local ride (not live, not traffic-aware)
   localRidePickupWaitSeconds: 300,  // assumed time to find / wait for a ride (availability is NOT verified)
@@ -35,13 +64,18 @@ export const ROUTING_DEFAULTS = Object.freeze({
   transferRadiusMeters: 250,        // derive walking transfers between nearby stops (0 disables)
   maxFootpathsPerStop: 8,
   defaultMaxTransfers: 3,
+  transferExpansionLimits: [4, 5], // diagnostic retries when nothing practical exists at the requested limit (still plausibility-checked)
   maxMaxTransfers: 5,
 
   // ---- Range query ----
   defaultWindowMinutes: 180,
   maxWindowMinutes: 720,
+  windowExpansionMinutes: [540, 720], // staged widening when a sparse timetable yields nothing in the requested window
+  allowDeparturesAfterWindow: true, // when nothing departs inside any window, show the earliest later journey (with a warning)
   maxRangeSearches: 40,             // cap on repeated RAPTOR runs per request
   maxJourneyHours: 24,              // search horizon after leaving the origin
+  maxTotalRangeSearches: 160,       // budget across all access stages / windows of one request (stops widening once spent)
+  stageStagnationLimit: 2,          // stop widening after this many consecutive stages that improved nothing by the minimum gain
 
   // ---- Timetable data quality ----
   maxTripDurationSeconds: 24 * 3600, // trips longer than this are treated as bad data and excluded
@@ -70,6 +104,11 @@ function overrideNumbers(defaults, env, prefixKeys = []) {
   for (const [key, value] of Object.entries(defaults)) {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       result[key] = overrideNumbers(value, env, [...prefixKeys, key]);
+    } else if (Array.isArray(value) && value.every(item => typeof item === 'number')) {
+      // Numeric lists: ROUTECONNECT_ROUTING_<NAME>=5000,10000 (an empty value keeps the default; "none" empties the list).
+      const raw = env[toEnvName([...prefixKeys, key].join('_'))];
+      const parsed = raw === undefined || raw === '' ? null : raw.trim().toLowerCase() === 'none' ? [] : raw.split(',').map(Number);
+      result[key] = parsed && parsed.every(Number.isFinite) ? parsed : [...value];
     } else if (typeof value === 'number') {
       const envName = toEnvName([...prefixKeys, key].join('_'));
       const raw = env[envName];

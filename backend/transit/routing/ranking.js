@@ -11,6 +11,7 @@
 // be false precision. Fares never influence FASTEST / BEST_BALANCED, so an uncertain estimate cannot override
 // timetable correctness.
 import { JOURNEY_LABELS } from './types.js';
+import { rateJourneys, bestPathIds } from '../rating/pathRating.js';
 
 const rides = journey => journey.localRideDurationSeconds ?? 0;
 
@@ -97,6 +98,13 @@ export function rankJourneys(journeys, ranking) {
   const lowerCost = lowerEstimatedCostWinner(selected, ranking);
   if (lowerCost) lowerCost.labels.push(JOURNEY_LABELS.LOWER_ESTIMATED_COST);
 
+  // Best Path Rating: judged on the journeys the user will actually see, so the comparison is true of the list on screen.
+  const ratings = rateJourneys(selected, ranking.rating);
+  selected.forEach((journey, i) => { journey.rating = ratings[i]; });
+  const bestIds = new Set(bestPathIds(selected, ratings));
+  for (const journey of selected) if (bestIds.has(journey.id)) journey.labels.unshift(JOURNEY_LABELS.BEST_PATH);
+  const bestPath = selected.find(j => bestIds.has(j.id)) ?? null;
+
   selected.sort(compareBy(j => [j._departureSeconds, j._arrivalSeconds, j.id]));
   return {
     journeys: selected,
@@ -104,7 +112,8 @@ export function rankJourneys(journeys, ranking) {
       fastest: fastest?.id ?? null,
       leastTransfers: leastTransfers?.id ?? null,
       bestBalanced: bestBalanced?.id ?? null,
-      lowerEstimatedCost: lowerCost?.id ?? null
+      lowerEstimatedCost: lowerCost?.id ?? null,
+      bestPath: bestPath?.id ?? null
     },
     stats: { candidates: journeys.length, pareto: pareto.length, dominatedRemoved: journeys.length - pareto.length, returned: selected.length }
   };

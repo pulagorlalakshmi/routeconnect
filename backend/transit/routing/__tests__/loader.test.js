@@ -78,7 +78,7 @@ describe('GET /api/v2/plan handler', () => {
   test('200: a validated query returns the documented response shape', () => {
     const { status, body } = get({ date: '2026-10-05', time: '07:30', windowMinutes: '60' }, getNetwork);
     assert.equal(status, 200);
-    assert.deepEqual(Object.keys(body).sort(), ['access', 'dataset', 'datasetWarning', 'journeys', 'message', 'performance', 'query', 'resolved', 'warnings', 'winners']);
+    assert.deepEqual(Object.keys(body).sort(), ['access', 'dataset', 'datasetWarning', 'diagnostics', 'journeys', 'message', 'performance', 'query', 'resolved', 'search', 'warnings', 'winners']);
     assert.equal(body.message, null, 'no "no route" message when journeys exist');
     assert.equal(body.resolved, null, 'coordinates were supplied, so nothing was resolved by name');
     assert.equal(body.query.date, '2026-10-05');

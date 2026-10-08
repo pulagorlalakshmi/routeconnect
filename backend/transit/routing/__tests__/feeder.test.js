@@ -9,11 +9,12 @@ import { formatLocalDateTime, isoToDayNumber } from '../serviceCalendar.js';
 import { assembleJourney } from '../journeyBuilder.js';
 import { NO_ROUTE_MESSAGE } from '../planner.js';
 import { rankJourneys, generalizedCost } from '../ranking.js';
-import { selectFeederCandidates } from '../feeder.js';
+import { selectFeederCandidates, createServiceCounter } from '../feeder.js';
 import { buildServiceDays } from '../planner.js';
 import { parseClockTime } from '../serviceCalendar.js';
 
-const FEEDER = { feederAccessRadiusMeters: 25000, feederEgressRadiusMeters: 25000 };
+const FEEDER = { feederStageRadiiMeters: [5000, 10000, 20000, 30000], hubStageRadiiMeters: [40000, 50000] };
+const NO_FEEDER = { feederStageRadiiMeters: [], hubStageRadiiMeters: [] };
 const O = { lat: 16.5, lon: 80.0 };        // the traveller (e.g. GPS "current location")
 const lonAt = km => 80.0 + km / 106.7;       // longitude km east of O at this latitude
 
@@ -43,7 +44,7 @@ describe('access: beyond the walking radius', () => {
   });
 
   test('...and with local rides switched off the same search honestly finds nothing', () => {
-    const result = run(hubSpec(), { from: O, to: 'T' }, { feederAccessRadiusMeters: 0, feederEgressRadiusMeters: 0 });
+    const result = run(hubSpec(), { from: O, to: 'T' }, NO_FEEDER);
     assert.deepEqual(result.journeys, []);
     assert.equal(result.message, NO_ROUTE_MESSAGE);
   });
@@ -95,7 +96,7 @@ describe('access: beyond the walking radius', () => {
     };
     const destination = { lat: 16.5, lon: lonAt(18) };
     assert.equal(run(spec, { from: O, to: destination }).journeys.length, 0);
-    const relaxed = run(spec, { from: O, to: destination }, { minTransitToRideRatio: 0 });
+    const relaxed = run(spec, { from: O, to: destination }, { minTransitToRideRatio: 0, maxLocalRideDurationShare: 1 });
     assert.ok(relaxed.journeys.length > 0, 'the ratio is a configurable rule, not a hidden constant');
   });
 });
@@ -138,7 +139,8 @@ describe('hub choice is made on the complete journey', () => {
       ],
       calendars: [daily()]
     };
-    const { journeys } = run(network, { from: 'W', to: 'T', windowMinutes: 180 });
+    // acceptableDurationFactor 0: nothing counts as "good enough", so every stage is searched (exhaustive mode)
+    const { journeys } = run(network, { from: 'W', to: 'T', windowMinutes: 180 }, { acceptableDurationFactor: 0, acceptableBaseSeconds: 0 });
     const viaHub = journeys.find(j => j.legs.some(l => l.tripId === 'H1'));
     const direct = journeys.find(j => j.legs.some(l => l.tripId === 'W1'));
     assert.ok(viaHub && direct, 'both options are offered');
@@ -161,8 +163,8 @@ describe('hub choice is made on the complete journey', () => {
     const config = testConfig({ ...FEEDER, maxFeederCandidates: 1 });
     const serviceDays = buildServiceDays(network, query, config);
     const picked = selectFeederCandidates(network, O, {
-      role: 'access', radiusMeters: 25000, excludeWithinMeters: config.walkAccessRadiusMeters, maxCandidates: 1,
-      otherPoint: { lat: 16.5, lon: lonAt(40) }, serviceDays, windowStart: 7 * 3600, windowEnd: 10 * 3600, horizonSeconds: 86400, config
+      role: 'access', stage: { kind: 'feeder', radiusMeters: 25000 }, otherPoint: { lat: 16.5, lon: lonAt(40) },
+      counter: createServiceCounter(network, serviceDays), windowStart: 7 * 3600, windowEnd: 10 * 3600, horizonSeconds: 86400, config
     });
     assert.equal(picked.length, 1);
     assert.equal(network.stopSourceIds[picked[0].stopIdx], 'F', 'the 8-trip hub beats the nearer 2-trip stop');
@@ -248,9 +250,31 @@ describe('no route and no feeder-only journeys', () => {
       ],
       calendars: [daily()]
     };
+    // the two areas have no connecting service at all: stated as a dataset coverage limitation, without wasting a search
     const result = run(spec, { from: O, to: { lat: 17.2, lon: lonAt(36) } });
     assert.deepEqual(result.journeys, []);
     assert.equal(result.message, NO_ROUTE_MESSAGE);
+    assert.equal(result.diagnostics.failureCode, 'DATASET_COVERAGE_LIMITATION');
+    assert.equal(result.performance.rangeSearches, 0);
+    assert.ok(result.warnings.some(w => w.code === 'NO_JOURNEY_FOUND'));
+  });
+
+  test('8b. connected in the dataset but no journey this day: walk + feeder were really tried on both sides', () => {
+    const spec = {
+      stops: { H: [16.5, lonAt(8)], Z: [16.5, lonAt(20)], Q: [16.5, lonAt(40)], T: [16.5, lonAt(52)] },
+      trips: [
+        { id: 'A1', route: 'R1', service: 'ALL', times: [['H', '08:00'], ['Z', '08:30']] },
+        { id: 'A2', route: 'R1', service: 'ALL', times: [['H', '09:00'], ['Z', '09:30']] },
+        { id: 'B1', route: 'R2', service: 'ALL', times: [['Q', '08:00'], ['T', '08:30']] },
+        { id: 'B2', route: 'R2', service: 'ALL', times: [['Q', '09:00'], ['T', '09:30']] },
+        { id: 'LINK', route: 'R3', service: 'SAT', times: [['Z', '10:00'], ['Q', '10:30']] } // joins the two areas, but only on Saturdays
+      ],
+      calendars: [daily(), { service: 'SAT', days: [0, 0, 0, 0, 0, 1, 0], start: '2026-10-01', end: '2026-12-31' }]
+    };
+    const result = run(spec, { from: O, to: { lat: 16.5, lon: lonAt(56) } }); // Monday 2026-10-05
+    assert.deepEqual(result.journeys, []);
+    assert.equal(result.diagnostics.failureCode, 'NO_CONNECTION');
+    assert.equal(result.diagnostics.sameNetwork, true);
     assert.ok(result.access.feederOriginCandidates.length > 0, 'origin feeder candidates were attempted');
     assert.ok(result.access.feederDestinationCandidates.length > 0, 'destination feeder candidates were attempted');
     assert.match(result.warnings.find(w => w.code === 'NO_JOURNEY_FOUND').message, /local-ride/);

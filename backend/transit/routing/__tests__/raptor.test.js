@@ -426,7 +426,7 @@ describe('range queries', () => {
   });
 
   test('when nothing leaves inside the window the next available journey is returned with a warning', () => {
-    const result = run(frequent, { from: 'A', to: 'C', time: '08:30', windowMinutes: 10 });
+    const result = run(frequent, { from: 'A', to: 'C', time: '08:30', windowMinutes: 10 }, { windowExpansionMinutes: [] });
     assert.deepEqual(result.journeys.map(j => j.legs[0].tripId), ['H1']);
     assert.ok(result.warnings.some(w => w.code === 'NO_DEPARTURE_IN_WINDOW'));
   });

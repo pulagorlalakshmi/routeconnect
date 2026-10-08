@@ -135,7 +135,7 @@ describe('no route: no fabricated alternative', () => {
     assert.deepEqual(body.journeys, []);
     assert.equal(body.message, 'No timetable-supported public-transport journey was found within the configured access range.');
     assert.equal(body.message, NO_ROUTE_MESSAGE);
-    assert.deepEqual(body.winners, { fastest: null, leastTransfers: null, bestBalanced: null, lowerEstimatedCost: null });
+    assert.deepEqual(body.winners, { fastest: null, leastTransfers: null, bestBalanced: null, lowerEstimatedCost: null, bestPath: null });
   });
 
   test('nothing but public transport is ever offered: no ride-hailing, taxi, auto, fare or estimate fields', () => {

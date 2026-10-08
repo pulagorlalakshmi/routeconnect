@@ -85,7 +85,9 @@ export function estimateLegFare(leg, configOrOverrides = {}) {
   return null;
 }
 
-const isFareBearing = leg => leg.mode !== 'walk';
+// Walks are free; a leg whose price is included in another leg's (connecting flight segments of one offer) is not a
+// separate fare component.
+const isFareBearing = leg => leg.mode !== 'walk' && !leg.fareIncludedWithLeg;
 
 // Aggregates leg fares into a total range.
 // Returns null when the journey has no fare-bearing legs at all.

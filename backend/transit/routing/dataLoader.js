@@ -21,7 +21,7 @@ const compareStrings = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 /**
  * @param {Object} records
  * @param {{id:number, sourceId:string, name:string, lat:number, lon:number}[]} records.stops
- * @param {{id:number, sourceId:string, shortName:?string, longName:?string, mode:string}[]} records.routes
+ * @param {{id:number, sourceId:string, shortName:?string, longName:?string, mode:string, agencyName?:?string}[]} records.routes
  * @param {{id:number, sourceId:string, routeId:number, serviceId:string, headsign:?string}[]} records.trips
  * @param {Iterable<{tripId:number, stopId:number, seq:number, arr:?number, dep:?number, pickup:number, dropOff:number, quality:string}>} records.stopTimes
  * @param {{serviceId:string, days:number[], start:string, end:string}[]} [records.calendars]
@@ -59,7 +59,7 @@ export function buildNetwork(records, config = getRoutingConfig()) {
   const routes = [];
   for (const route of records.routes) {
     routeDbToIdx.set(route.id, routes.length);
-    routes.push({ sourceId: route.sourceId, shortName: route.shortName ?? null, longName: route.longName ?? null, mode: route.mode });
+    routes.push({ sourceId: route.sourceId, shortName: route.shortName ?? null, longName: route.longName ?? null, mode: route.mode, agencyName: route.agencyName ?? null });
   }
   const tripMeta = new Map();
   for (const trip of records.trips) {
@@ -290,8 +290,10 @@ export function loadNetworkFromDb(db, config = getRoutingConfig()) {
 
   const stops = db.prepare('SELECT id, source_stop_id, name, lat, lon FROM stops WHERE dataset_id = ? ORDER BY id').all(datasetId)
     .map(row => ({ id: row.id, sourceId: row.source_stop_id, name: row.name, lat: row.lat, lon: row.lon }));
-  const routes = db.prepare('SELECT id, source_route_id, short_name, long_name, mode FROM routes WHERE dataset_id = ? ORDER BY id').all(datasetId)
-    .map(row => ({ id: row.id, sourceId: row.source_route_id, shortName: row.short_name, longName: row.long_name, mode: row.mode }));
+  // The operator comes from the feed's own agency.txt (routes.agency_id -> agencies.name); null when the feed gives none.
+  const routes = db.prepare(`SELECT r.id, r.source_route_id, r.short_name, r.long_name, r.mode, a.name AS agency_name
+    FROM routes r LEFT JOIN agencies a ON a.id = r.agency_id WHERE r.dataset_id = ? ORDER BY r.id`).all(datasetId)
+    .map(row => ({ id: row.id, sourceId: row.source_route_id, shortName: row.short_name, longName: row.long_name, mode: row.mode, agencyName: row.agency_name ?? null }));
   const trips = db.prepare('SELECT id, source_trip_id, route_id, service_id, headsign FROM trips WHERE dataset_id = ? ORDER BY id').all(datasetId)
     .map(row => ({ id: row.id, sourceId: row.source_trip_id, routeId: row.route_id, serviceId: row.service_id, headsign: row.headsign }));
   const calendars = db.prepare('SELECT * FROM service_calendars WHERE dataset_id = ?').all(datasetId)

@@ -1,13 +1,22 @@
 import { useState } from 'react';
+import type { ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Bookmark, Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { isLocalRideLeg, isTransitLeg, isWalkLeg } from '../services/planService';
-import type { DataConfidence, Journey, JourneyLabel, Leg, TransitLeg } from '../services/planService';
+import { isLocalRideLeg, isTransitLeg, isWalkLeg, TransitLeg } from '../services/planService';
+import type { DataConfidence, Journey, JourneyLabel, Leg } from '../services/planService';
 import { clockOf, dateOf, dayDifference, formatDateLabel, formatDuration } from '../utils/dateTime';
 import { formatFareRange } from '../utils/fare';
+import { operatorBusName, routeLabelOf, serviceNumberOf, vehicleFamilyOf, vehicleTitleOf } from '../utils/busIdentity';
+import { headerLabels } from '../utils/journeyBadges';
+import { journeyTrustSummary } from '../utils/trackingTrust';
+import { BusSummaryRow, LegIdentifier, LegTrust, VehicleLine } from './BusIdentity';
+import PathRating from './PathRating';
+import JourneySimulation from './JourneySimulation';
+import RideProviders from './RideProviders';
 
 const LABELS: Record<JourneyLabel, { text: string; hint: string; className: string }> = {
+  BEST_PATH: { text: '⭐ Best Path', hint: 'Highest overall Best Path Rating among the options shown.', className: 'bg-purple-100 border-purple-300 text-purple-900' },
   FASTEST: { text: '⚡ Fastest', hint: 'Shortest complete door-to-door travel time.', className: 'bg-amber-100 border-amber-300 text-amber-900' },
   LEAST_TRANSFERS: { text: '🔁 Fewest transfers', hint: 'Fewest bus changes.', className: 'bg-sky-100 border-sky-300 text-sky-900' },
   BEST_BALANCED: { text: '⭐ Best balanced', hint: 'Best mix of travel time, transfers, walking, waiting and local-ride time.', className: 'bg-purple-100 border-purple-300 text-purple-900' },
@@ -33,20 +42,40 @@ export function ConfidenceBadge({ level, prefix }: { level: DataConfidence; pref
   );
 }
 
-const serviceName = (leg: TransitLeg) => leg.routeShortName || leg.routeLongName || leg.routeId;
 const minutesBetween = (fromIso: string, toIso: string) => Math.max(0, Math.round((new Date(toIso).getTime() - new Date(fromIso).getTime()) / 60000));
 
-// "🚕 Local ride + 🚌 Bus 03663 → 06378": the multimodal shape of the journey at a glance.
-function journeyTitle(journey: Journey): string {
+// "🚕 Local ride + 🚌 APSRTC Bus", "🚆 Indian Railways Train", "🚌 Bus + 🚆 Train": the shape of the journey at a glance,
+// one part per run of the same vehicle type. Identifiers are listed below.
+const FAMILY_ICON = { bus: '🚌', train: '🚆', flight: '✈️' } as const;
+export function journeyTitle(journey: Journey): string {
   const parts: string[] = [];
-  const buses = journey.legs.filter(isTransitLeg).map(serviceName);
+  const vehicles = journey.legs.filter(isTransitLeg);
   const first = journey.legs.find(l => isLocalRideLeg(l) && l.kind === 'access');
   const last = journey.legs.find(l => isLocalRideLeg(l) && l.kind === 'egress');
   if (first) parts.push('🚕 Local ride');
-  parts.push(`🚌 Bus ${buses.join(' → ')}`);
+  const runs: TransitLeg[][] = [];
+  for (const leg of vehicles) {
+    const run = runs.at(-1);
+    if (run && vehicleFamilyOf(run[0]) === vehicleFamilyOf(leg)) run.push(leg);
+    else runs.push([leg]);
+  }
+  const mixed = runs.length > 1;
+  for (const run of runs) {
+    const family = vehicleFamilyOf(run[0]);
+    const operators = new Set(run.map(leg => leg.operatorInfo?.name ?? leg.operator ?? ''));
+    const operator = operators.size === 1 ? [...operators][0] || null : null;
+    // In a mixed journey keep it short ("Bus + Train"); otherwise name the operator ("APSRTC Bus", "2 APSRTC buses").
+    const text = family === 'bus'
+      ? (mixed ? (run.length > 1 ? `${run.length} buses` : 'Bus') : operatorBusName(operator, run.length))
+      : mixed ? (family === 'train' ? 'Train' : 'Flight') : vehicleTitleOf(run[0]);
+    parts.push(`${FAMILY_ICON[family]} ${text}`);
+  }
   if (last) parts.push('🚕 Local ride');
   return parts.join(' + ');
 }
+
+// In this feed a headsign is often just the route number again; only a real destination name is worth showing.
+const showHeadsign = (leg: TransitLeg) => Boolean(leg.headsign) && !/^\d+$/.test(leg.headsign!.trim()) && leg.headsign!.trim() !== serviceNumberOf(leg) && leg.headsign!.trim() !== leg.routeCode;
 
 function walkText(leg: Extract<Leg, { mode: 'walk' }>): string {
   if (leg.kind === 'access') return `Walk to ${leg.to.name}`;
@@ -54,20 +83,35 @@ function walkText(leg: Extract<Leg, { mode: 'walk' }>): string {
   return `Walk between stops: ${leg.from.name} → ${leg.to.name}`;
 }
 
+function FactChip({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <li title={title} className="rounded-full border border-[#E4E9E6] bg-white px-2.5 py-0.5 text-[11px] font-semibold text-[#667085]">
+      {children}
+    </li>
+  );
+}
+
 const FARE_DISCLAIMER = 'Estimated from route distance and available transit data. Actual fare may vary.';
 
-export default function JourneyCard({ journey, index, from, to }: { journey: Journey; index: number; from: string; to: string }) {
+export default function JourneyCard({ journey, index, from, to, initialShowDetails = false }: { journey: Journey; index: number; from: string; to: string; initialShowDetails?: boolean }) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const [showDetails, setShowDetails] = useState(false);
+  const [showDetails, setShowDetails] = useState(initialShowDetails);
   const [saved, setSaved] = useState(false);
 
   // Walks of a few seconds (the origin/destination is essentially at the stop) are noise in the step list.
   const visibleLegs = journey.legs.filter(leg => !(isWalkLeg(leg) && leg.durationSeconds < 30));
   const extraDays = dayDifference(journey.departureTime, journey.arrivalTime);
-  const busCount = journey.legs.filter(isTransitLeg).length;
+  const vehicleLegs = journey.legs.filter(isTransitLeg);
+  const vehicleCount = (family: 'bus' | 'train' | 'flight') => vehicleLegs.filter(leg => vehicleFamilyOf(leg) === family).length;
+  const vehicleSummary = (['bus', 'train', 'flight'] as const)
+    .map(family => ({ family, n: vehicleCount(family) }))
+    .filter(entry => entry.n > 0)
+    .map(({ family, n }) => `${n} ${family === 'bus' ? (n === 1 ? 'bus' : 'buses') : family === 'train' ? (n === 1 ? 'train' : 'trains') : (n === 1 ? 'flight' : 'flights')}`)
+    .join(' + ');
   const approximate = journey.timeQuality !== 'exact';
+  const walks = journey.walkingDurationSeconds >= 30;
   const hasRide = journey.localRideCount > 0;
   const totalFare = journey.fareEstimate && journey.fareEstimate.min !== null ? formatFareRange(journey.fareEstimate) : null;
   const partialFare = Boolean(journey.fareEstimate && !journey.fareEstimate.complete);
@@ -121,7 +165,7 @@ export default function JourneyCard({ journey, index, from, to }: { journey: Jou
           <h3 className="text-lg md:text-xl font-black text-[#1F2933]">{journeyTitle(journey)}</h3>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {journey.labels.map(label => (
+          {headerLabels(journey.labels).map(label => (
             <span key={label} title={LABELS[label].hint} className={`inline-flex items-center gap-1 border px-2.5 py-1 rounded-full text-xs font-black shadow-2xs ${LABELS[label].className}`}>
               {LABELS[label].text}
             </span>
@@ -134,6 +178,16 @@ export default function JourneyCard({ journey, index, from, to }: { journey: Jou
           )}
         </div>
       </div>
+
+      {/* Buses: service number (copyable), real stops, subtle external tracker link */}
+      <ul aria-label="Vehicles in this journey" className="pt-3 space-y-1.5">
+        {journey.legs.filter(isTransitLeg).map((leg, i) => <BusSummaryRow key={`${leg.tripId}-${i}`} leg={leg} />)}
+      </ul>
+
+      {/* The route at a glance: one segment per real leg, with its mode icon */}
+      <section aria-label="Route preview" className="mt-3 rounded-xl border border-[#E4E9E6] bg-[#FBFCFB] px-3 pt-2.5">
+        <JourneySimulation journey={journey} />
+      </section>
 
       {/* Key facts */}
       <div className="py-4 grid grid-cols-2 sm:grid-cols-4 gap-4 items-center">
@@ -178,16 +232,17 @@ export default function JourneyCard({ journey, index, from, to }: { journey: Jou
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs font-semibold text-[#667085] pb-3">
-        {hasRide && <span title="Estimated from road distance and an assumed speed; not live or traffic-aware.">🚕 Local ride ≈ {formatDuration(journey.localRideDurationSeconds)} (approx.)</span>}
-        <span>🚶 Walking {journey.walkingDurationSeconds >= 30 ? `≈ ${formatDuration(journey.walkingDurationSeconds)} (estimated)` : 'none'}</span>
-        <span>⏳ Waiting {journey.waitingDurationSeconds > 0 ? formatDuration(journey.waitingDurationSeconds) : 'none'}</span>
-        {approximate && <span title="This dataset publishes approximate stop times, not exact timepoints.">🕒 Approximate stop times</span>}
-      </div>
-      <p className="text-[11px] font-semibold text-[#667085] pb-3">
-        Schedule: {CONFIDENCE[journey.scheduleConfidence]?.text ?? 'Unverified'}
-        {hasRide && ' · Local transport: Estimated (availability not verified)'}
-      </p>
+      {/* Short facts as chips; only what applies (no "Walking none" / "Waiting none"). Details live in tooltips. */}
+      {(hasRide || walks || journey.waitingDurationSeconds > 0 || approximate) && (
+        <ul aria-label="Journey facts" className="flex flex-wrap gap-1.5 pb-3">
+          {hasRide && <FactChip title="Estimated from road distance and an assumed speed. No ride provider is connected, so availability is not verified.">Local ride ≈ {formatDuration(journey.localRideDurationSeconds)}</FactChip>}
+          {walks && <FactChip title="Straight-line walking estimate.">Walk ≈ {formatDuration(journey.walkingDurationSeconds)}</FactChip>}
+          {journey.waitingDurationSeconds > 0 && <FactChip title="Time spent waiting at transfer stops.">Waiting {formatDuration(journey.waitingDurationSeconds)}</FactChip>}
+          {approximate && <FactChip title="This dataset publishes approximate stop times, not exact timepoints.">Approx. stop times</FactChip>}
+        </ul>
+      )}
+
+      {journey.rating && <PathRating rating={journey.rating} isBest={journey.labels.includes('BEST_PATH')} trust={journeyTrustSummary(journey)} />}
 
       {/* Action row */}
       <div className="pt-3 flex items-center justify-between border-t border-gray-100 flex-wrap gap-2">
@@ -195,7 +250,7 @@ export default function JourneyCard({ journey, index, from, to }: { journey: Jou
           <span className="font-bold text-gray-800">{from}</span>
           <span className="text-gray-400">➔</span>
           <span className="font-bold text-gray-800">{to}</span>
-          <span className="text-gray-500 text-[11px] ml-1">· {busCount} bus{busCount === 1 ? '' : 'es'}{hasRide ? ` + ${journey.localRideCount} local ride${journey.localRideCount === 1 ? '' : 's'}` : ''}</span>
+          <span className="text-gray-500 text-[11px] ml-1">· {vehicleSummary}{hasRide ? ` + ${journey.localRideCount} local ride${journey.localRideCount === 1 ? '' : 's'}` : ''}</span>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -219,6 +274,9 @@ export default function JourneyCard({ journey, index, from, to }: { journey: Jou
       {showDetails && (
         <div className="mt-6 pt-6 border-t border-gray-200 space-y-4">
           <h4 className="text-xs font-black uppercase tracking-wider text-[#667085]">🗺 Step-by-step journey</h4>
+          <div className="rounded-xl border border-[#E4E9E6] bg-[#FBFCFB] px-3 pt-2.5">
+            <JourneySimulation journey={journey} detailed />
+          </div>
           <ol className="relative space-y-4 border-l-2 border-gray-200 pl-6 ml-2">
             {visibleLegs.map((leg, i) => {
               if (isWalkLeg(leg)) {
@@ -247,7 +305,8 @@ export default function JourneyCard({ journey, index, from, to }: { journey: Jou
                     <p className="text-xs text-[#667085]">
                       Approx. duration ≈ {formatDuration(leg.durationSeconds)} (about {(leg.distanceMeters / 1000).toFixed(1)} km by road, including pickup) · {clockOf(leg.departureTime)} → {clockOf(leg.arrivalTime)}
                     </p>
-                    {fare && <p className="text-sm font-bold text-[#1F2933]">Approx. fare {fare} <span className="text-xs font-semibold text-amber-800">estimated</span></p>}
+                    {fare && <p className="text-sm font-bold text-[#1F2933]">Approx. local ride fare {fare} <span className="text-xs font-semibold text-amber-800">estimated</span></p>}
+                    <RideProviders city={leg.providerCity} options={leg.providerOptions} />
                     <p className="text-[11px] font-semibold text-amber-800">
                       Availability not verified. A generic auto / cab estimate: no ride provider is connected, and duration and fare are approximate.
                     </p>
@@ -272,9 +331,17 @@ export default function JourneyCard({ journey, index, from, to }: { journey: Jou
                   <div className="relative bg-emerald-50/40 border border-emerald-200 rounded-xl p-4 space-y-2">
                     <span className="absolute -left-[34px] top-4 flex h-6 w-6 items-center justify-center rounded-full bg-[#146B5B] text-white text-xs border-2 border-white">🚌</span>
                     <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <p className="text-sm font-black text-[#1F2933]">Bus service {serviceName(leg)}</p>
+                      <p className="text-sm font-black text-[#1F2933]">{vehicleTitleOf(leg)}</p>
                       <ConfidenceBadge level={leg.dataConfidence} />
                     </div>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#667085]">
+                      <LegIdentifier leg={leg} />
+                      {(leg.operatorInfo?.name ?? leg.operator) ? null : <span className="italic">Operator not identified</span>}
+                      {leg.daysOfOperation && leg.daysOfOperation.length > 0 && leg.daysOfOperation.length < 7 && <span>Runs {leg.daysOfOperation.join(', ')}</span>}
+                    </div>
+                    <LegTrust leg={leg} />
+                    <VehicleLine leg={leg} />
+                    {showHeadsign(leg) && <p className="text-xs text-[#667085]">Towards {leg.headsign}</p>}
                     <p className="text-sm text-[#1F2933]">
                       <strong>{clockOf(leg.departureTime)}</strong> board at <strong>{leg.fromStop.name}</strong>
                     </p>

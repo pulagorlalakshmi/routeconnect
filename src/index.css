@@ -111,3 +111,45 @@ select {
 .animate-slideUp {
   animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
+
+/* Track Bus hand-off (TrackingTransition.tsx): ~1.1 s, subtle, and off under prefers-reduced-motion. */
+@keyframes rc-track-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes rc-track-rise { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes rc-track-draw { from { transform: translateY(-50%) scaleX(0); } to { transform: translateY(-50%) scaleX(1); } }
+@keyframes rc-track-drive { 0% { transform: translate(0, -50%); } 100% { transform: translate(152px, -50%); } }
+@keyframes rc-track-ping { 0% { transform: scale(.5); opacity: .9; } 100% { transform: scale(1.9); opacity: 0; } }
+@keyframes rc-track-fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+.rc-track-overlay { animation: rc-track-fade 140ms ease-out both; }
+.rc-track-card { animation: rc-track-rise 220ms cubic-bezier(.2, .8, .2, 1) both; }
+.rc-track-line { animation: rc-track-draw 620ms cubic-bezier(.4, 0, .2, 1) 80ms both; }
+.rc-track-bus { animation: rc-track-drive 820ms cubic-bezier(.45, 0, .2, 1) 120ms both; }
+.rc-track-pulse { opacity: 0; animation: rc-track-ping 900ms ease-out 560ms infinite; }
+.rc-track-progress { transform: scaleX(0); animation-name: rc-track-fill; animation-timing-function: linear; animation-fill-mode: forwards; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rc-track-overlay, .rc-track-card, .rc-track-line, .rc-track-bus, .rc-track-pulse, .rc-track-progress { animation: none !important; }
+  .rc-track-line, .rc-track-progress { transform: translateY(-50%) scaleX(1); }
+  .rc-track-progress { transform: scaleX(1); }
+}
+
+/* Journey simulation strip (JourneySimulation.tsx): a slow relay along the real legs. Only one small chip per visible card
+   moves (its `left` inside a layout-contained track); off-screen cards and prefers-reduced-motion get a static strip. */
+@keyframes rc-sim-travel {
+  0%, 12% { left: 0%; }
+  88%, 100% { left: 100%; }
+}
+@keyframes rc-sim-breathe { 0%, 100% { opacity: .75; } 50% { opacity: 1; } }
+@keyframes rc-sim-ping { 0% { transform: scale(.8); opacity: .7; } 100% { transform: scale(2.3); opacity: 0; } }
+
+.rc-sim-line-dashed { background: repeating-linear-gradient(90deg, #98A2B3 0 4px, transparent 4px 8px); }
+.rc-sim-runner { animation-name: rc-sim-travel; animation-timing-function: cubic-bezier(.45, 0, .25, 1); animation-fill-mode: both; }
+.rc-sim-glow { box-shadow: 0 0 6px rgba(20, 107, 91, .35); animation: rc-sim-breathe 2.8s ease-in-out infinite; }
+.rc-sim-pulse { animation: rc-sim-ping 2.4s ease-out infinite; }
+.rc-sim-static .rc-sim-pulse, .rc-sim-static .rc-sim-glow { animation: none; }
+.rc-sim-static .rc-sim-pulse { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rc-sim-runner, .rc-sim-glow, .rc-sim-pulse { animation: none !important; }
+  .rc-sim-pulse { opacity: 0; }
+}
