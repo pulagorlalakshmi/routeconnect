@@ -21,6 +21,7 @@ backend/.env.*
 # The GTFS feed is community-maintained with an unconfirmed licence: never commit or redistribute it.
 backend/transit/data/
 backend/transit/reports/
+backend/data/
 *.zip
 
 # Build output

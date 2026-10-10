@@ -16,9 +16,11 @@ import { getGoogleRouteInsights } from './services/googleMapsService.js';
 import { getFlightOptions } from './services/flightService.js';
 import { getTransitStatus } from './transit/status.js';
 import { handleMultimodalPlanRequest } from './transit/multimodal/planMultimodal.js';
-import { getTransitNetwork } from './transit/routing/dataLoader.js';
+import { getTransitNetwork, reloadTransitNetwork } from './transit/routing/dataLoader.js';
 import { getHubMetrics, getConnectivity } from './transit/routing/hubs.js';
 import { handlePlaceSearch } from './transit/routing/placeSearch.js';
+import { getTransitConfig } from './transit/config.js';
+import { ensureTransitData } from './transit/ensureData.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -282,8 +284,69 @@ app.get('/api/planner', async (req, res) => {
   }
 });
 
+// In-flight transit bootstrap promise to prevent duplicate boots and coordinate with incoming requests
+let transitBootstrapPromise = null;
+let lastBootstrapFailureTime = 0;
+
+async function bootstrapTransit() {
+  if (transitBootstrapPromise) return transitBootstrapPromise;
+  transitBootstrapPromise = (async () => {
+    const config = getTransitConfig();
+    try {
+      let network = getTransitNetwork();
+      if (!network) {
+        if (process.env.ROUTECONNECT_AUTO_IMPORT_TRANSIT === 'false') {
+          console.warn(`[Transit Diagnostics] Transit data missing at "${config.dbPath}", auto-bootstrap disabled.`);
+          return null;
+        }
+        console.log(`[Transit] Checking transit dataset at "${config.dbPath}"...`);
+        const result = await ensureTransitData();
+        if (result.ready) {
+          network = reloadTransitNetwork();
+        }
+      }
+      if (network) {
+        getHubMetrics(network);
+        getConnectivity(network);
+        console.log(`[Transit] Transit network ready: ${network.stats.patterns} patterns, ${network.stats.stops} stops (${network.stats.loadTimeMs} ms)`);
+      } else {
+        console.warn(`[Transit Diagnostics] Transit data is unavailable at "${config.dbPath}". Places and v2 routing endpoints will return 503.`);
+        console.warn('[Transit Diagnostics] Troubleshooting: Run "npm run transit:download && npm run transit:import" or configure ROUTECONNECT_TRANSIT_DATABASE_PATH.');
+      }
+      return network;
+    } catch (error) {
+      lastBootstrapFailureTime = Date.now();
+      console.warn('[Transit Diagnostics] Transit bootstrap failed:', error.message);
+      console.warn(`[Transit Diagnostics] Database path checked: "${config.dbPath}"`);
+      console.warn('[Transit Diagnostics] Troubleshooting: Run "npm run transit:download && npm run transit:import" or check network connectivity.');
+      return null;
+    } finally {
+      transitBootstrapPromise = null;
+    }
+  })();
+  return transitBootstrapPromise;
+}
+
+async function waitForTransitReady() {
+  if (getTransitNetwork()) return;
+  if (!transitBootstrapPromise && (Date.now() - lastBootstrapFailureTime > 30000)) {
+    bootstrapTransit();
+  }
+  if (transitBootstrapPromise) {
+    try {
+      await Promise.race([
+        transitBootstrapPromise,
+        new Promise(resolve => setTimeout(resolve, 30000))
+      ]);
+    } catch {
+      // Diagnostic messages are already logged by bootstrapTransit
+    }
+  }
+}
+
 // Transit dataset status (read-only provenance/validity/counts; not used by the planner yet)
-app.get('/api/transit/status', (req, res) => {
+app.get('/api/transit/status', async (req, res) => {
+  await waitForTransitReady();
   try {
     return res.status(200).json(getTransitStatus());
   } catch (error) {
@@ -295,6 +358,7 @@ app.get('/api/transit/status', (req, res) => {
 // Multimodal planner: GTFS buses via RAPTOR plus any configured rail / flight / private-bus sources, shortlisted for
 // diversity. Independent of the legacy /api/planner above, which is unchanged.
 app.get('/api/v2/plan', async (req, res) => {
+  await waitForTransitReady();
   try {
     const { status, body } = await handleMultimodalPlanRequest(req.query);
     return res.status(status).json(body);
@@ -305,7 +369,8 @@ app.get('/api/v2/plan', async (req, res) => {
 });
 
 // Stop/place autocomplete for the GTFS planner: only places that exist in the timetable are suggested.
-app.get('/api/v2/places', (req, res) => {
+app.get('/api/v2/places', async (req, res) => {
+  await waitForTransitReady();
   const { status, body } = handlePlaceSearch(req.query, () => getTransitNetwork());
   return res.status(status).json(body);
 });
@@ -335,16 +400,8 @@ if (fs.existsSync(distPath)) {
   });
 }
 
-app.listen(PORT, () => {
-  console.log(`RouteConnect server running on http://localhost:${PORT}`);
-  // Warm the in-memory transit network so the first /api/v2/plan request is fast (skipped if nothing is imported).
-  setImmediate(() => {
-    try {
-      const network = getTransitNetwork();
-      if (network) { getHubMetrics(network); getConnectivity(network); } // derived hub scores / connectivity, cached per network
-      if (network) console.log(`Transit network ready: ${network.stats.patterns} patterns, ${network.stats.stops} stops (${network.stats.loadTimeMs} ms)`);
-    } catch (error) {
-      console.warn('Transit network warm-up skipped:', error.message);
-    }
-  });
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`RouteConnect server running on port ${PORT}`);
+  // Bootstrap or warm the in-memory transit network
+  bootstrapTransit();
 });

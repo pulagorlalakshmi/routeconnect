@@ -454,6 +454,7 @@ export function handlePlanRequest(rawQuery, { config = getRoutingConfig(), now =
       return { status: 500, body: { error: 'The transit network could not be loaded.' } };
     }
     if (!network) {
+      console.warn('[Transit Diagnostics] Journey planner requested but transit network is not available in memory. Import a GTFS feed with "npm run transit:ensure" or "npm run transit:import".');
       return {
         status: 503,
         body: { error: 'Transit data is not available. Import a GTFS feed first (npm run transit:download, then npm run transit:import).' }

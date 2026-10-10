@@ -135,6 +135,9 @@ export function handlePlaceSearch(rawQuery, getNetwork) {
     console.error('Transit network load failed:', error.message);
     return { status: 500, body: { error: 'The transit network could not be loaded.' } };
   }
-  if (!network) return { status: 503, body: { error: 'Transit data is not available. Import a GTFS feed first.' } };
+  if (!network) {
+    console.warn('[Transit Diagnostics] Place search requested but transit network is not available in memory. Import a GTFS feed with "npm run transit:ensure" or "npm run transit:import".');
+    return { status: 503, body: { error: 'Transit data is not available. Import a GTFS feed first.' } };
+  }
   return { status: 200, body: { query: query.trim(), places: searchPlaces(network, query, { limit }) } };
 }
