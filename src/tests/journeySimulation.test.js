@@ -56,7 +56,7 @@ describe('journey simulation', () => {
     const markup = ui.render(ui.JourneySimulation, { journey: direct });
     assert.deepEqual(icons(markup), ['bus']);
     assert.deepEqual(nodes(markup), ['origin', 'destination']);
-    assert.match(strip(markup), /Guntur 1 h 52 min Narasaraopet/);
+    assert.match(strip(markup), /Guntur 1 h 52 min Bus Narasaraopet/);
   });
 
   test('2. each mode gets its own icon: local ride, bus, train, flight, walk, bike/scooter', () => {
@@ -128,7 +128,7 @@ describe('journey simulation', () => {
   test('8. mobile: segments keep a minimum width and the strip scrolls horizontally instead of breaking the card', () => {
     const markup = ui.render(ui.JourneySimulation, { journey: twoBuses });
     assert.match(markup, /overflow-x-auto/);
-    assert.match(markup, /min-w-\[112px\]/);
+    assert.match(markup, /min-w-\[136px\]/);
     assert.match(markup, /overflow-y-hidden/);
     assert.match(markup, /min-w-max/);
     assert.equal(ui.shortPlaceName('KUNCHANAPALLI CROSS ROAD NEAR APSDMA'), 'Kunchanapalli…');
@@ -161,21 +161,22 @@ describe('journey card with the simulation', () => {
   test('the card shows a route preview above the key facts', () => {
     const markup = card(journey(direct.legs));
     assert.match(markup, /aria-label="Route preview"/);
-    assert.ok(markup.indexOf('Route preview') < markup.indexOf('Departs'));
+    assert.ok(markup.indexOf('Route preview') < markup.indexOf('Total time'));
   });
 
   test('7. concise text: no "Walking none" / "Waiting none" / "Schedule:" / "Local transport:" prose', () => {
     const text = strip(card(journey(rideBus.legs, { localRideCount: 1, localRideDurationSeconds: 17 * 60, waitingDurationSeconds: 0 })));
     assert.doesNotMatch(text, /Walking none|Waiting none|Schedule: |Local transport:|\(approx\.\)|availability not verified\)/);
-    assert.match(text, /Local ride ≈ 17 min/);
-    assert.match(text, /Approx\. stop times/);
+    assert.match(text, /Local ride included/);
+    assert.doesNotMatch(text, /Approx\. stop times/, 'data-quality notes are in the details');
   });
 
   test('waiting and walking appear as short chips only when they apply', () => {
     const text = strip(card(journey(twoBuses.legs, { waitingDurationSeconds: 20 * 60, walkingDurationSeconds: 5 * 60 })));
-    assert.match(text, /Walk ≈ 5 min Waiting 20 min Approx\. stop times/);
+    assert.match(text, /Waiting 20 min Walk 5 min/);
     const exact = strip(card(journey(direct.legs, { timeQuality: 'exact' })));
-    assert.doesNotMatch(exact, /Journey facts|Waiting|Walk ≈|Approx\. stop/);
+    assert.doesNotMatch(exact, /Waiting|Walk \d|Approx\. stop/);
+    assert.doesNotMatch(card(journey(direct.legs)), /aria-label="Journey facts"/);
   });
 
   test('10. no route logic in the component: it only reads the legs it is given', () => {

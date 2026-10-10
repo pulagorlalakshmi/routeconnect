@@ -109,7 +109,7 @@ describe('tracking status in the journey card', () => {
   });
 
   test('a whole card with only untested buses has no negative tracking wording', () => {
-    const text = strip(card(journey([leg('09594', OPTIONS_09594), leg('51524', OPTIONS_09594)])));
+    const text = strip(ui.renderCard({ journey: journey([leg('09594', OPTIONS_09594), leg('51524', OPTIONS_09594)]), index: 1, from: 'Guntur', to: 'Narasaraopet', initialShowDetails: true }));
     assert.doesNotMatch(text, /not verified|No verified|No public|Tracking failed|Untrusted/i);
     assert.equal((text.match(/Live tracking options/g) || []).length, 2);
   });

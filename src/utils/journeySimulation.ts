@@ -12,11 +12,13 @@ export interface SimNode {
   name: string;
   kind: 'origin' | 'transfer' | 'change' | 'destination';
   time: string | null; // ISO time at this node (departure for the origin, arrival otherwise)
+  waitSeconds: number; // time spent at this node before the next leg leaves (0 for the origin and destination)
 }
 
 export interface SimSegment {
   mode: SimMode;
   modeName: string;   // "APSRTC bus", "Local ride", "Train", ...
+  shortName: string;  // "Bus", "Local ride", "Train", ...: the word shown under the segment's time
   label: string;      // accessible sentence for the segment
   durationSeconds: number;
   durationText: string;
@@ -67,18 +69,21 @@ export function buildSimulation(journey: Pick<Journey, 'legs'>): Simulation {
   legs.forEach((leg, i) => {
     const mode = simulationModeOf(leg);
     const { from, to, dep, arr } = endpoints(leg);
-    if (i === 0) nodes.push({ name: from, kind: 'origin', time: dep });
+    if (i === 0) nodes.push({ name: from, kind: 'origin', time: dep, waitSeconds: 0 });
+    // Waiting at the node before this leg: the gap between arriving there and this leg leaving (never negative).
+    else nodes[i].waitSeconds = Math.max(0, Math.round((Date.parse(dep) - Date.parse(nodes[i].time ?? dep)) / 1000)) || 0;
     const service = isTransitLeg(leg) ? (serviceNumberOf(leg) ?? leg.trainNumber ?? leg.flightNumber ?? null) : null;
     const name = modeName(leg, mode);
     const durationText = formatDuration(leg.durationSeconds);
     segments.push({
       mode,
       modeName: name,
+      shortName: MODE_NAME[mode],
       label: `${name}${service ? ` ${service}` : ''} from ${from} to ${to}, ${durationText}${isLocalRideLeg(leg) || isWalkLeg(leg) ? ' (estimated)' : ''}`,
       durationSeconds: leg.durationSeconds,
       durationText
     });
-    nodes.push({ name: to, kind: 'destination', time: arr });
+    nodes.push({ name: to, kind: 'destination', time: arr, waitSeconds: 0 });
   });
 
   // Inner nodes: a transfer between two transit legs, otherwise a change of mode (e.g. local ride -> bus at a stop).

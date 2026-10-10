@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect } from 'react';
-import { MapPin, Navigation, Map, X, Globe, Check, AlertCircle, Loader2 } from 'lucide-react';
+import { useState, useRef, useEffect, useId } from 'react';
+import { MapPin, Navigation, Map, X, Check, AlertCircle, Loader2, CircleDot } from 'lucide-react';
 import { searchPlaces } from '../services/planService';
 import type { PlaceSuggestion } from '../services/planService';
 
@@ -27,7 +27,21 @@ const toSuggestion = (place: PlaceSuggestion): SuggestionItem => ({
   lon: place.lon
 });
 
+// Quick actions offered in each field's dropdown, in order. The origin leads with "use my current location"; the
+// destination leads with "select on map" and keeps current location as a quiet last option. Only the origin's map
+// picker centres on the user's location as it opens.
+export type LocationKind = 'origin' | 'destination';
+export type QuickAction = 'current_location' | 'select_on_map';
+export function quickActionsFor(kind: LocationKind): { top: QuickAction[]; bottom: QuickAction[]; gpsButtonInField: boolean; locateOnMapOpen: boolean } {
+  return kind === 'origin'
+    ? { top: ['current_location', 'select_on_map'], bottom: [], gpsButtonInField: true, locateOnMapOpen: true }
+    : { top: ['select_on_map'], bottom: ['current_location'], gpsButtonInField: false, locateOnMapOpen: false };
+}
+
 interface LocationInputProps {
+  // Origin and destination share one input, but "use my current location" is a primary action only for the origin:
+  // a destination offers it as a quiet secondary option and never requests the location on its own.
+  kind?: LocationKind;
   label: string;
   placeholder: string;
   value: string;
@@ -38,7 +52,12 @@ interface LocationInputProps {
   suggestions?: string[];
 }
 
-export default function LocationInput({ label, placeholder, value, onChange, onCurrentLocation, onCoordinates }: LocationInputProps) {
+export default function LocationInput({ kind = 'origin', label, placeholder, value, onChange, onCurrentLocation, onCoordinates }: LocationInputProps) {
+  const isOrigin = kind === 'origin';
+  const actions = quickActionsFor(kind);
+  const inputId = `location-${kind}-${useId()}`;
+  // A destination has no separate "current location" handler: its coordinates go through onCoordinates.
+  const reportCurrentLocation = (lat: number, lng: number) => (onCurrentLocation ?? onCoordinates)?.(lat, lng);
   const [isFocused, setIsFocused] = useState(false);
   const [showMapPicker, setShowMapPicker] = useState(false);
   const [geoLoading, setGeoLoading] = useState(false);
@@ -272,11 +291,15 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
   const handleProceedWithCurrentLocation = () => {
     if (!detectedCoords) return;
     onChange('📍 Current Location');
-    onCurrentLocation?.(detectedCoords.lat, detectedCoords.lng);
+    reportCurrentLocation(detectedCoords.lat, detectedCoords.lng);
     setShowDownwardMap(false);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') {
+      setIsFocused(false);
+      return;
+    }
     if (e.key === 'Enter') {
       const trimmed = value.trim().toLowerCase();
       if (/^(?:📍\s*)?(?:use\s+)?(?:my\s+)?current\s*location$/i.test(trimmed) || trimmed === 'here' || trimmed === 'gps') {
@@ -289,7 +312,7 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
   const confirmMapSelection = (selectedName: string) => {
     onChange(selectedName);
     if (selectedMapLocation?.isCurrentLocation) {
-      onCurrentLocation?.(selectedMapLocation.lat, selectedMapLocation.lng);
+      reportCurrentLocation(selectedMapLocation.lat, selectedMapLocation.lng);
     } else if (selectedMapLocation) {
       onCoordinates?.(selectedMapLocation.lat, selectedMapLocation.lng);
     }
@@ -341,71 +364,96 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
     );
   };
 
+  const renderAction = (action: QuickAction, placement: 'top' | 'bottom') => {
+    if (action === 'select_on_map') {
+      return (
+        <button
+          key={action}
+          type="button"
+          data-action={action}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            setRequestLocationOnOpen(actions.locateOnMapOpen);
+            setShowMapPicker(true);
+            setIsFocused(false);
+          }}
+          className="w-full px-4 py-3 text-left text-sm text-[#1F2933] hover:bg-[#F7FAF9] flex items-center gap-2.5 border-b border-[#EEF1EF] font-bold transition"
+        >
+          <Map className="h-4 w-4 text-[#667085]" />
+          Select on map
+        </button>
+      );
+    }
+    // A destination's "current location" is a quiet last option, worded so it cannot be mistaken for the start.
+    return placement === 'top' ? (
+      <button
+        key={action}
+        type="button"
+        data-action={action}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={handleUseCurrentLocation}
+        className="w-full px-4 py-3 text-left text-sm text-[#146B5B] hover:bg-[#EEF6F3] flex items-center gap-2.5 border-b border-[#EEF1EF] font-bold transition"
+      >
+        <Navigation className={`h-4 w-4 ${isRequestingPermission ? 'animate-spin' : ''}`} />
+        {isRequestingPermission ? 'Finding your location…' : 'Use my current location'}
+      </button>
+    ) : (
+      <button
+        key={action}
+        type="button"
+        data-action={action}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={handleUseCurrentLocation}
+        className="w-full px-4 py-2 text-left text-xs font-semibold text-[#667085] hover:bg-[#F7FAF9] hover:text-[#1F2933] flex items-center gap-2 border-t border-[#EEF1EF] transition"
+      >
+        <Navigation className="h-3.5 w-3.5" />
+        Use my current location as the destination
+      </button>
+    );
+  };
+
   return (
-    <div ref={containerRef} className="space-y-1.5 text-sm font-semibold text-[#1F2933] block relative">
-      <span className="flex items-center justify-between">
-        <span className="flex items-center gap-2">
-          <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-blue-100 to-blue-50 text-blue-600 shadow-sm border border-blue-200/50">
-            <MapPin className="h-4 w-4" />
-          </span>
-          {label}
-        </span>
-      </span>
+    <div ref={containerRef} className="space-y-1.5 relative">
+      <label htmlFor={inputId} className="flex items-center gap-2 text-sm font-bold text-[#1F2933]">
+        {isOrigin
+          ? <CircleDot aria-hidden className="h-4 w-4 text-[#146B5B]" />
+          : <MapPin aria-hidden className="h-4 w-4 text-[#146B5B]" />}
+        {label}
+      </label>
 
       <div className="relative">
         <input
+          id={inputId}
           type="text"
           value={value}
           onChange={(event) => onChange(event.target.value)}
           onFocus={() => setIsFocused(true)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
-          className="w-full rounded-xl border border-[#D9DED9] bg-white pl-4 pr-11 py-3 text-sm text-[#1F2933] shadow-sm outline-none transition hover:border-[#B9C6C1] focus:border-[#146B5B] focus:ring-1 focus:ring-[#146B5B]"
+          autoComplete="off"
+          aria-expanded={isFocused}
+          aria-controls={`${inputId}-options`}
+          className={`w-full rounded-xl border border-[#D0D9D5] bg-white pl-4 ${isOrigin ? 'pr-12' : 'pr-4'} py-3.5 text-base font-semibold text-[#1F2933] placeholder:font-medium placeholder:text-[#98A2B3] outline-none transition hover:border-[#B9C6C1] focus:border-[#146B5B] focus:ring-2 focus:ring-[#146B5B]/20`}
         />
 
-        {/* Quick GPS target button inside input */}
-        <button
-          type="button"
-          onClick={handleUseCurrentLocation}
-          title="Use My Current Location"
-          className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-gray-400 hover:bg-emerald-50 hover:text-emerald-700 transition"
-        >
-          <Navigation className={`h-4 w-4 ${isRequestingPermission ? 'animate-spin text-emerald-600' : ''}`} />
-        </button>
+        {/* Origin only: a one-tap "use my location" button inside the field */}
+        {actions.gpsButtonInField && (
+          <button
+            type="button"
+            onClick={handleUseCurrentLocation}
+            title="Use my current location"
+            aria-label="Use my current location"
+            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-2 text-[#667085] hover:bg-[#EEF6F3] hover:text-[#146B5B] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#146B5B] transition"
+          >
+            <Navigation className={`h-4 w-4 ${isRequestingPermission ? 'animate-spin text-[#146B5B]' : ''}`} />
+          </button>
+        )}
 
-        {/* Dropdown suggestions popup */}
+        {/* Options while typing: quick actions first, then matching stops */}
         {isFocused && (
-          <div className="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-2xl border border-blue-200 bg-white shadow-xl max-h-[340px] overflow-y-auto">
-            
-            {/* Geolocation trigger */}
-            <button
-              type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-              }}
-              onClick={handleUseCurrentLocation}
-              className="w-full px-4 py-3 text-left text-sm text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 border-b border-emerald-50 font-bold transition"
-            >
-              <Navigation className={`h-4 w-4 text-emerald-600 ${isRequestingPermission ? 'animate-spin' : ''}`} />
-              {isRequestingPermission ? 'Asking for location permission...' : '📍 Use My Current Location'}
-            </button>
+          <div id={`${inputId}-options`} className="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-xl border border-[#D9DED9] bg-white shadow-xl max-h-[340px] overflow-y-auto">
+            {actions.top.map(action => renderAction(action, 'top'))}
 
-            {/* Map selector trigger */}
-            <button
-              type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                setRequestLocationOnOpen(true);
-                setShowMapPicker(true);
-                setIsFocused(false);
-              }}
-              className="w-full px-4 py-3 text-left text-sm text-blue-700 hover:bg-blue-50 flex items-center gap-2.5 border-b border-blue-50 font-bold transition"
-            >
-              <Map className="h-4 w-4 text-blue-500" />
-              🗺 Select on Map
-            </button>
-
-            {/* Match suggestions */}
             {filteredSuggestions.length > 0 ? (
               filteredSuggestions.map((item, idx) => {
                 const isNearby = item.type === 'nearby_station' || item.type === 'nearby_bus';
@@ -413,7 +461,8 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
                   <button
                     key={idx}
                     type="button"
-                    onMouseDown={() => {
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
                       if (item.name === '📍 Current Location' || item.name === '📍 Use My Current Location' || item.name.toLowerCase().includes('current location')) {
                         handleUseCurrentLocation();
                       } else {
@@ -422,32 +471,34 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
                         setIsFocused(false);
                       }
                     }}
-                    className={`w-full px-4 py-3 text-left text-sm hover:bg-blue-50 flex items-center gap-3 transition border-b border-blue-50/50 last:border-b-0 ${isNearby ? 'bg-amber-50/30 pl-8' : ''}`}
+                    className={`w-full px-4 py-2.5 text-left text-sm hover:bg-[#F7FAF9] flex items-center gap-3 transition border-b border-[#EEF1EF] last:border-b-0 ${isNearby ? 'pl-8' : ''}`}
                   >
-                    <span className="text-base shrink-0">{getEmojiForType(item.type)}</span>
+                    <span aria-hidden className="text-base shrink-0">{getEmojiForType(item.type)}</span>
                     <div className="flex-1 min-w-0">
-                      <p className={`font-extrabold truncate ${isNearby ? 'text-amber-800' : 'text-blue-900'}`}>{item.name}</p>
-                      <p className="text-[10px] text-blue-400 font-semibold uppercase tracking-wider">{item.subtitle}</p>
+                      <p className="font-bold truncate text-[#1F2933]">{item.name}</p>
+                      <p className="text-xs text-[#667085]">{item.subtitle}</p>
                     </div>
                   </button>
                 );
               })
             ) : (
               value.trim() !== '' && (
-                <div className="px-4 py-3 text-xs text-blue-500 font-semibold text-center italic">
-                  {suggestionsLoading ? 'Searching stops...' : 'No matching stop in the transit timetable.'}
+                <div className="px-4 py-3 text-xs text-[#667085] font-medium text-center">
+                  {suggestionsLoading ? 'Searching stops…' : 'No matching stop in the transit timetable.'}
                 </div>
               )
             )}
+
+            {actions.bottom.map(action => renderAction(action, 'bottom'))}
           </div>
         )}
       </div>
 
       {/* Asking for Location Permission Status */}
       {isRequestingPermission && (
-        <div className="mt-2 flex items-center gap-2.5 rounded-xl border border-blue-200 bg-blue-50/95 px-3.5 py-3 text-xs font-semibold text-blue-900 shadow-sm animate-pulse">
-          <Loader2 className="h-4 w-4 animate-spin text-blue-600 shrink-0" />
-          <span>Asking for location permission... Please click <strong>&ldquo;Allow&rdquo;</strong> in your browser prompt to view your location on Google Maps.</span>
+        <div role="status" className="mt-2 flex items-center gap-2.5 rounded-lg border border-[#E4E9E6] bg-white px-3 py-2 text-xs font-medium text-[#475467]">
+          <Loader2 className="h-4 w-4 animate-spin text-[#146B5B] shrink-0" />
+          <span>Finding your location… allow location access if your browser asks.</span>
         </div>
       )}
 
@@ -457,7 +508,7 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
           <div className="flex items-start gap-2">
             <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
             <div>
-              <p className="font-bold text-amber-950">Location Permission Required</p>
+              <p className="font-bold text-amber-950">Location not available</p>
               <p className="text-[11px] text-amber-800 mt-0.5">{permissionError}</p>
             </div>
           </div>
@@ -482,7 +533,7 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
                 <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
               </span>
               <span className="text-xs font-extrabold text-[#146B5B] uppercase tracking-wider">
-                Google Map — Current Location
+                Your current location
               </span>
             </div>
             <button
@@ -528,7 +579,7 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
               className="flex-1 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-extrabold text-sm rounded-xl transition shadow-md hover:shadow-lg flex items-center justify-center gap-2"
             >
               <Check className="h-4 w-4 stroke-[3]" />
-              <span>Proceed with Current Location</span>
+              <span>{isOrigin ? 'Start from here' : 'Go here'}</span>
             </button>
             <button
               type="button"
@@ -544,20 +595,22 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
 
       {/* Map selection Modal overlay */}
       {showMapPicker && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1F2933]/45 backdrop-blur-sm p-4 animate-fadeIn">
+        <div role="dialog" aria-modal="true" aria-label={isOrigin ? 'Choose your starting point on the map' : 'Choose your destination on the map'} className="fixed inset-0 z-50 flex items-center justify-center bg-[#1F2933]/45 backdrop-blur-sm p-4 animate-fadeIn">
           <div className="w-full max-w-xl bg-white rounded-[2rem] shadow-2xl border border-blue-200 overflow-hidden flex flex-col">
             <div className="flex items-center justify-between bg-gradient-to-r from-blue-600 to-blue-800 p-5 text-white">
               <div>
-                <p className="text-xs uppercase tracking-[0.2em] font-bold text-blue-100">Select Location on Andhra Pradesh Map</p>
-                <h3 className="text-lg font-black">{label}</h3>
+                <p className="text-xs uppercase tracking-[0.2em] font-bold text-blue-100">Select on map</p>
+                <h3 className="text-lg font-black">{isOrigin ? 'Choose your starting point' : 'Choose your destination'}</h3>
               </div>
               <button
+                type="button"
                 onClick={() => {
                   setShowMapPicker(false);
                   setCustomPin(null);
                   setSelectedMapLocation(null);
                   initialMapLocationRef.current = null;
                 }}
+                aria-label="Close map"
                 className="rounded-full bg-white/20 p-2 hover:bg-white/30 transition"
               >
                 <X className="h-4.5 w-4.5" />
@@ -566,7 +619,7 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
 
             <div className="p-5 space-y-4 flex-1">
               <p className="text-xs text-blue-850 font-semibold flex items-center gap-1.5 bg-blue-50 p-3 rounded-xl border border-blue-100">
-                🗺 Click anywhere on Google Maps, drag the pin, or use your current location. Google will identify the selected address.
+                Click the map or drag the pin to choose {isOrigin ? 'where you start' : 'where you are going'}.
               </p>
 
               <div ref={googleMapRef} className="relative min-h-[320px] rounded-2xl border border-blue-200 overflow-hidden bg-blue-50">
@@ -606,9 +659,11 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
                   type="button"
                   onClick={useCurrentLocationOnGoogleMap}
                   disabled={geoLoading || Boolean(googleMapError)}
-                  className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold rounded-xl transition shadow-md"
+                  className={isOrigin
+                    ? 'flex-1 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold rounded-xl transition shadow-md'
+                    : 'flex-1 py-3 border border-[#D9DED9] bg-white hover:bg-gray-50 disabled:opacity-50 text-[#475467] text-sm font-semibold rounded-xl transition'}
                 >
-                  {geoLoading ? 'Requesting location permission...' : '📍 Use My Current Location'}
+                  {geoLoading ? 'Finding your location…' : 'Use my current location'}
                 </button>
                 <button
                   type="button"
@@ -616,7 +671,7 @@ export default function LocationInput({ label, placeholder, value, onChange, onC
                   disabled={!selectedMapLocation}
                   className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold rounded-xl transition shadow-md"
                 >
-                  ✓ Proceed
+                  ✓ Use this place
                 </button>
               </div>
               {selectedMapLocation && (

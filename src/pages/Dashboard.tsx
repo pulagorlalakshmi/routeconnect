@@ -120,18 +120,12 @@ export default function Dashboard() {
       <RouteBuddyMapBackground />
       <Navbar />
 
-      <main className="relative z-10 flex-1 w-full max-w-7xl mx-auto px-4 py-12 md:py-20 flex flex-col justify-center space-y-8">
-        <div className="text-center space-y-4 max-w-2xl mx-auto mb-4">
-          <p className="text-xs uppercase tracking-[0.2em] font-extrabold text-[#146B5B]">
-            {user ? `Welcome back, ${user.name}` : 'Public Transport Route Planner'}
+      <main className="relative z-10 flex-1 w-full max-w-7xl mx-auto px-4 py-10 md:py-16 flex flex-col justify-center">
+        {/* Search card: the page's only task */}
+        <div className="max-w-xl mx-auto w-full space-y-3">
+          <p className="text-center text-xs uppercase tracking-[0.2em] font-extrabold text-[#146B5B]">
+            {user ? `Welcome back, ${user.name}` : 'Public transport route planner'}
           </p>
-          <h1 className="text-2xl md:text-3xl font-extrabold text-[#1F2933] tracking-tight">
-            Plan your next journey
-          </h1>
-        </div>
-
-        {/* Search Control Card */}
-        <div className="max-w-4xl mx-auto w-full">
           <SearchCard
             from={from}
             to={to}

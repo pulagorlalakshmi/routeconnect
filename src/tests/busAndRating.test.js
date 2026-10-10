@@ -68,6 +68,8 @@ const journey = (extra = {}) => ({
   rating: rating(), legs: [rideLeg('access'), leg()], ...extra
 });
 const card = extra => ui.renderCard({ journey: journey(extra), index: 1, from: 'Kunchanapalli', to: 'Narasaraopet' });
+// The same card with "More details" open: stops, service numbers, tracking and the rating live there.
+const openCard = extra => ui.renderCard({ journey: journey(extra), index: 1, from: 'Kunchanapalli', to: 'Narasaraopet', initialShowDetails: true });
 
 describe('bus identification', () => {
   test('1. the service number is displayed, labelled as a service number', () => {
@@ -109,7 +111,7 @@ describe('bus identification', () => {
     const text = strip(card());
     assert.match(text, /Local ride \+ .*APSRTC Bus/);
     assert.doesNotMatch(text, /Bus 03846/);
-    assert.match(text, /Kunchanapalli Cross Road → Narasaraopet/);
+    assert.match(strip(openCard()), /Kunchanapalli Cross Road → Narasaraopet/, 'stops are in the details');
   });
 
   test('operator naming', () => {
@@ -120,10 +122,11 @@ describe('bus identification', () => {
 });
 
 describe('best path rating UI', () => {
-  test('25/26. the breakdown is collapsed by default and the full table is not in the card', () => {
-    const text = strip(card());
+  test('25/26. the rating lives in the details, and its breakdown is collapsed there too', () => {
+    assert.doesNotMatch(strip(card()), /Why this rating\?/, 'the summary has no rating');
+    const text = strip(openCard());
     assert.match(text, /Why this rating\?/);
-    assert.match(card(), /aria-expanded="false"/);
+    assert.match(openCard(), /aria-expanded="false" aria-controls="rating-details/);
     for (const row of ['Time Efficiency', 'Cost Efficiency', 'Transfer Convenience', 'First / Last Mile', 'Schedule Confidence']) {
       assert.ok(!text.includes(row), `"${row}" must not be visible by default`);
     }
@@ -158,20 +161,20 @@ describe('best path rating UI', () => {
   });
 
   test('27. the rating strip stays small relative to the whole card', () => {
-    const whole = card();
+    const whole = openCard();
     const strip = ui.render(ui.PathRating, { rating: rating(), isBest: true });
     assert.ok(strip.length / whole.length < 0.25, `rating share ${(strip.length / whole.length).toFixed(2)}`);
   });
 
-  test('28. no badge overload: at most two header badges, and Best Path only once', () => {
+  test('28. no badge overload: at most two summary badges, Best Path first and only once', () => {
     const labels = ['BEST_PATH', 'FASTEST', 'LEAST_TRANSFERS', 'BEST_BALANCED', 'LOWER_ESTIMATED_COST'];
-    assert.deepEqual(ui.headerLabels(labels), ['FASTEST']);
+    assert.deepEqual(ui.headerLabels(labels), ['BEST_PATH', 'FASTEST']);
     assert.deepEqual(ui.headerLabels(['FASTEST', 'LEAST_TRANSFERS', 'BEST_BALANCED']), ['FASTEST', 'LEAST_TRANSFERS']);
-    assert.deepEqual(ui.headerLabels(['BEST_PATH']), []);
-    assert.deepEqual(ui.headerLabels(['BEST_BALANCED', 'LEAST_TRANSFERS']), ['LEAST_TRANSFERS', 'BEST_BALANCED']);
+    assert.deepEqual(ui.headerLabels(['BEST_PATH']), ['BEST_PATH']);
+    assert.deepEqual(ui.headerLabels(['BEST_BALANCED', 'LEAST_TRANSFERS']), ['LEAST_TRANSFERS'], 'Best balanced is never a badge');
     const text = strip(card());
-    assert.equal((text.match(/Best Path/g) || []).length, 1, 'Best Path appears once');
-    assert.equal((text.match(/Best balanced|Lower estimated cost|Fewest transfers/g) || []).length, 0);
+    assert.equal((text.match(/Best path/gi) || []).length, 1, 'Best Path appears once');
+    assert.equal((text.match(/Best balanced|Lower cost|Fewest transfers/g) || []).length, 0);
   });
 
   test('29. the tracker control is visually secondary (small outlined link, not a filled button)', () => {
@@ -182,18 +185,19 @@ describe('best path rating UI', () => {
   });
 
   test('route information stays before the rating in the card', () => {
-    const whole = card();
-    assert.ok(whole.indexOf('Departs') < whole.indexOf('aria-label="Path rating"'));
-    assert.ok(whole.indexOf('Travel time') < whole.indexOf('aria-label="Path rating"'));
+    const whole = openCard();
+    assert.ok(whole.indexOf('Route preview') < whole.indexOf('aria-label="Path rating"'));
+    assert.ok(whole.indexOf('Total time') < whole.indexOf('aria-label="Path rating"'));
   });
 });
 
 describe('rating UI simplification', () => {
   test('10/11. detailed metrics are hidden by default and the expandable explanation is still offered', () => {
-    const markup = card();
+    const markup = openCard();
     assert.match(strip(markup), /Why this rating\?/);
     assert.match(markup, /aria-expanded="false"/);
     assert.doesNotMatch(strip(markup), /Time Efficiency|Cost Efficiency|Transfer Convenience/);
+    assert.doesNotMatch(strip(card()), /Why this rating|Time Efficiency/);
     const open = strip(ui.render(ui.RatingBreakdown, { rating: rating() }));
     assert.match(open, /Time Efficiency 9\.1 \/ 10/);
     assert.match(open, /Fast journey/);
@@ -243,7 +247,8 @@ describe('local ride provider awareness', () => {
 
   test('18/19/20. one generic estimated fare range; no provider-specific fare; nobody marked Available', () => {
     const text = expanded({ providerCity: 'Guntur', providerOptions: options });
-    assert.match(text, /Approx\. local ride fare ₹100–₹180 estimated/);
+    assert.match(text, /Fare breakdown Local ride to the stop ₹100–₹180/);
+    assert.match(text, /Estimated from route distance/);
     assert.equal((text.match(/₹/g) || []).length >= 1, true);
     assert.doesNotMatch(text, /(Uber|Rapido|Ola)[^.]{0,20}₹/);
     assert.doesNotMatch(text, /(Uber|Rapido|Ola)[^.]{0,30}(available|Available)/);
@@ -404,7 +409,8 @@ describe('Track Bus control', () => {
   });
 
   test('a card with two buses shows one compact control per bus and no duplicated disclaimers', () => {
-    const markup = card({ legs: [leg(), leg({ serviceNumber: '47567', routeShortName: '47567', tripId: 't2' })] });
+    const markup = openCard({ legs: [leg(), leg({ serviceNumber: '47567', routeShortName: '47567', tripId: 't2' })] });
+    assert.doesNotMatch(card({ legs: [leg(), leg({ serviceNumber: '47567', routeShortName: '47567', tripId: 't2' })] }), /Track Bus/, 'tracking is a detail');
     assert.equal((markup.match(/Track Bus/g) || []).length, 2);
     assert.equal((markup.match(/title="Tracking provided by APSRTC\/external partners\."/g) || []).length, 2, 'one tooltip per control, no body text');
   });

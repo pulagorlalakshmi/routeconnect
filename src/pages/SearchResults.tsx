@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import type { ReactNode } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import JourneyCard from '../components/JourneyCard';
@@ -17,7 +18,7 @@ function SourcesLine({ sources }: { sources: SourceReport[] }) {
   const parts = sources.filter(source => source.id !== 'private_bus' || source.status === 'ok');
   const privateBus = sources.find(source => source.id === 'private_bus');
   return (
-    <p aria-label="Sources searched" className="mt-1 text-[11px] text-[#667085]">
+    <p aria-label="Sources searched" className="text-[11px] text-[#667085]">
       {parts.map((source, i) => (
         <span key={source.id} title={source.message ?? source.label}>
           {i > 0 && ' · '}
@@ -28,11 +29,19 @@ function SourcesLine({ sources }: { sources: SourceReport[] }) {
     </p>
   );
 }
+function Notice({ children, title }: { children: ReactNode; title?: string }) {
+  return (
+    <li title={title} className="flex items-start gap-2 rounded-lg bg-white/70 border border-[#E4E9E6] px-3 py-2 text-xs font-medium text-[#475467]">
+      <Info aria-hidden className="mt-px h-3.5 w-3.5 shrink-0 text-[#98A2B3]" />
+      <span>{children}</span>
+    </li>
+  );
+}
 import LoadingState from '../components/LoadingState';
 import { fetchPlan, PlanError } from '../services/planService';
 import type { FailureCode, Journey, PlanResponse } from '../services/planService';
 import { addMinutes, clockOf, dateOf, formatDateLabel, nowLocalHHMM, todayLocalIso } from '../utils/dateTime';
-import { SlidersHorizontal, ArrowUpDown, X, Filter, ChevronLeft } from 'lucide-react';
+import { SlidersHorizontal, ArrowUpDown, X, Filter, ChevronLeft, Info } from 'lucide-react';
 
 // Rural services are sparse, so look several hours ahead of the requested time.
 const WINDOW_MINUTES = 360;
@@ -199,6 +208,11 @@ export default function SearchResults() {
   const noticeWarnings = (plan?.warnings ?? []).filter(w => w.severity === 'warning' && !NOTICE_HIDDEN.has(w.code) && !w.code.startsWith('NO_STOPS'));
   const infoWarnings = (plan?.warnings ?? []).filter(w => w.severity === 'info');
   const noRouteDetail = noRouteMessage(plan?.diagnostics?.failureCode);
+  const hasLocalRide = Boolean(plan?.journeys.some(j => j.localRideCount > 0));
+  // One short schedule line instead of a warning block: inferred schedules are the common case with this dataset.
+  const scheduleNotice = plan?.datasetWarning || plan?.journeys.some(j => j.scheduleConfidence === 'inferred')
+    ? 'Schedules are estimated from a community timetable. Confirm times before travelling.'
+    : null;
 
   const checkbox = 'w-4 h-4 rounded text-[#146B5B] border-[#D9DED9] focus:ring-[#146B5B]';
 
@@ -230,7 +244,7 @@ export default function SearchResults() {
                 className="inline-flex items-center gap-2 rounded-xl border border-[#D9DED9] bg-white px-4 py-2.5 text-xs font-extrabold text-[#1F2933] hover:bg-gray-50 transition cursor-pointer"
               >
                 <SlidersHorizontal className="h-4 w-4 text-[#146B5B]" />
-                <span>Display Options</span>
+                <span>Filters</span>
               </button>
 
               <div className="relative">
@@ -325,40 +339,28 @@ export default function SearchResults() {
         {/* Results */}
         {!loading && !error && plan && plan.journeys.length > 0 && (
           <div className="space-y-5">
-            {plan.datasetWarning && (
-              <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900" role="alert">
-                ⚠ {plan.datasetWarning}
-              </div>
-            )}
-            {noticeWarnings.map(w => (
-              <div key={w.code} className="rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-3 text-sm font-semibold text-amber-900">
-                {w.message}
-              </div>
-            ))}
-            {plan.journeys.some(j => j.localRideCount > 0) && (
-              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800" role="note">
-                🚕 Some options include an <strong>estimated local ride</strong> to or from a bus stop. No ride provider is connected, so availability is not verified, and ride time and fare are approximate.
-              </div>
-            )}
-
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-1">
-              <div>
-                <h2 className="text-xl font-black text-[#1F2933]">Travel options ({visibleJourneys.length})</h2>
-                <p className="text-xs text-[#667085] mt-0.5 font-medium">
-                  Complete door-to-door journeys compared across the available transport sources.
-                </p>
-                {plan.sources && plan.sources.length > 0 && <SourcesLine sources={plan.sources} />}
-              </div>
-              <span className="text-xs font-bold text-slate-700 bg-slate-50 border border-slate-200 px-3 py-1 rounded-full flex items-center gap-1.5 shadow-2xs self-start">
-                <span className="h-2 w-2 rounded-full bg-slate-400"></span>
-                Schedule confidence is shown on every option
-              </span>
+            <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-1 pt-1">
+              <h2 className="text-xl font-black text-[#1F2933]">Travel options ({visibleJourneys.length})</h2>
+              {plan.sources && plan.sources.length > 0 && <SourcesLine sources={plan.sources} />}
             </div>
+
+            {/* Page notices: one short line each, calm styling; the full text is in "About this data" below. */}
+            {(scheduleNotice || hasLocalRide || noticeWarnings.length > 0) && (
+              <ul aria-label="Notices" className="space-y-1.5">
+                {scheduleNotice && (
+                  <Notice title={plan.datasetWarning ?? undefined}>{scheduleNotice}</Notice>
+                )}
+                {hasLocalRide && (
+                  <Notice title="No ride provider is connected, so availability is not verified.">Local ride times and fares are estimates.</Notice>
+                )}
+                {noticeWarnings.map(w => <Notice key={w.code}>{w.message}</Notice>)}
+              </ul>
+            )}
 
             {visibleJourneys.length === 0 ? (
               <div className="bg-white border border-[#D9DED9] rounded-xl p-10 text-center">
                 <p className="text-lg font-black text-[#1F2933]">No options match your filters</p>
-                <p className="mt-1 text-xs text-[#667085]">Open "Display Options" to widen the filters.</p>
+                <p className="mt-1 text-xs text-[#667085]">Open "Filters" to widen them.</p>
                 <button
                   onClick={handleClearFilters}
                   className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-[#146B5B] px-4 py-2 text-xs font-bold text-white hover:bg-[#0f5447] transition"
@@ -386,7 +388,9 @@ export default function SearchResults() {
             <details className="rounded-xl border border-[#D9DED9] bg-white px-4 py-3 text-xs text-[#667085]">
               <summary className="cursor-pointer font-bold text-[#1F2933]">About this data</summary>
               <ul className="mt-2 list-disc pl-5 space-y-1">
+                {plan.datasetWarning && <li>{plan.datasetWarning}</li>}
                 {infoWarnings.map(w => <li key={w.code}>{w.message}</li>)}
+                {hasLocalRide && <li>A local ride is a generic auto / cab estimate to or from a stop. No ride provider is connected, so availability is not verified, and ride time and fare are approximate.</li>}
                 <li>Every option contains at least one bus from the timetable. A local ride only connects you to or from a bus stop; ride-only journeys and named ride-hailing services are never shown.</li>
               </ul>
             </details>
@@ -402,7 +406,7 @@ export default function SearchResults() {
             <div className="flex items-center justify-between border-b border-[#D9DED9] pb-4 mb-5">
               <div className="flex items-center gap-2 text-[#1F2933]">
                 <Filter className="h-5 w-5 text-[#146B5B]" />
-                <h3 className="text-base font-black">Display Options</h3>
+                <h3 className="text-base font-black">Filters</h3>
               </div>
               <button onClick={() => setShowFilterPanel(false)} className="p-2 hover:bg-gray-50 rounded-full transition" aria-label="Close">
                 <X className="h-4.5 w-4.5 text-[#667085]" />
