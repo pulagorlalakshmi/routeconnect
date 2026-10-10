@@ -258,7 +258,8 @@ export default function JourneyCard({ journey, index, from, to, initialShowDetai
         <div id={detailsId} className="mt-4 space-y-6 border-t border-[#EEF1EF] pt-5">
           <DetailSection title="Journey breakdown">
             <div className="rounded-xl bg-[#F7FAF9] px-3 sm:px-5 pt-3">
-              <JourneySimulation journey={journey} detailed />
+              {/* Static here: the summary strip above is the card's one moving vehicle. */}
+              <JourneySimulation journey={journey} detailed animate={false} />
             </div>
             <ol className="space-y-2">
               {visibleLegs.map((leg, i) => {

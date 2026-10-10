@@ -232,7 +232,7 @@ describe('15. mobile', () => {
   test('the strip scrolls sideways instead of squeezing; numbers and header stack on small screens', () => {
     const markup = summary();
     assert.match(markup, /overflow-x-auto/);
-    assert.match(markup, /min-w-max/);
+    assert.match(markup, /style="min-width:536px"/, 'three legs: the strip keeps its width and scrolls');
     assert.match(markup, /grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4/);
     assert.match(markup, /flex-col-reverse gap-2 sm:flex-row/);
     assert.match(details(), /grid gap-6 md:grid-cols-2/, 'detail groups stack on phones');
@@ -247,7 +247,7 @@ describe('16. accessibility and reduced motion', () => {
     assert.doesNotMatch(markup, /rc-sim-runner/);
     assert.match(read('components', 'JourneySimulation.tsx'), /prefersReducedMotion\(\)/);
     const css = read('index.css');
-    assert.match(css.slice(css.lastIndexOf('@media (prefers-reduced-motion: reduce)')), /\.rc-sim-runner, \.rc-sim-glow, \.rc-sim-pulse \{ animation: none !important; \}/);
+    assert.match(css.slice(css.lastIndexOf('@media (prefers-reduced-motion: reduce)')), /\.rc-sim-runner, \.rc-sim-runner \* \{ transition: none !important; \}/);
   });
 
   test('the strip describes the whole route and each leg for screen readers', () => {
