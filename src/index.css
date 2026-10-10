@@ -133,23 +133,12 @@ select {
   .rc-track-progress { transform: scaleX(1); }
 }
 
-/* Journey simulation strip (JourneySimulation.tsx): a slow relay along the real legs. Only one small chip per visible card
-   moves (its `left` inside a layout-contained track); off-screen cards and prefers-reduced-motion get a static strip. */
-@keyframes rc-sim-travel {
-  0%, 12% { left: 0%; }
-  88%, 100% { left: 100%; }
-}
-@keyframes rc-sim-breathe { 0%, 100% { opacity: .75; } 50% { opacity: 1; } }
-@keyframes rc-sim-ping { 0% { transform: scale(.8); opacity: .7; } 100% { transform: scale(2.3); opacity: 0; } }
-
-.rc-sim-line-dashed { background: repeating-linear-gradient(90deg, #98A2B3 0 4px, transparent 4px 8px); }
-.rc-sim-runner { animation-name: rc-sim-travel; animation-timing-function: cubic-bezier(.45, 0, .25, 1); animation-fill-mode: both; }
-.rc-sim-glow { box-shadow: 0 0 6px rgba(20, 107, 91, .35); animation: rc-sim-breathe 2.8s ease-in-out infinite; }
-.rc-sim-pulse { animation: rc-sim-ping 2.4s ease-out infinite; }
-.rc-sim-static .rc-sim-pulse, .rc-sim-static .rc-sim-glow { animation: none; }
-.rc-sim-static .rc-sim-pulse { opacity: 0; }
+/* Journey simulation strip (JourneySimulation.tsx): one vehicle, moved by a single requestAnimationFrame loop that writes
+   its inline `left`/opacity and clips the "completed" line. There are no keyframes: only the vehicle's icon and colour
+   cross-fade through transitions, which are switched off under prefers-reduced-motion (where no vehicle is shown at all:
+   off-screen cards and reduced-motion get the static diagram). */
+.rc-sim-runner { transition: background-color 500ms ease, border-color 500ms ease, color 500ms ease; }
 
 @media (prefers-reduced-motion: reduce) {
-  .rc-sim-runner, .rc-sim-glow, .rc-sim-pulse { animation: none !important; }
-  .rc-sim-pulse { opacity: 0; }
+  .rc-sim-runner, .rc-sim-runner * { transition: none !important; }
 }

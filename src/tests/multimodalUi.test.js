@@ -105,7 +105,7 @@ describe('mode-aware cards', () => {
     assert.match(text, /Indian Railways Train/);
     assert.match(text, /Train 99001 Test Express/);
     assert.match(text, /Runs Mon, Wed/);
-    assert.match(text, /1 train \+ 2 local rides/);
+    assert.match(text, /Transfers Direct/);
     assert.match(markup, /data-icon="train-front"/);
   });
 
