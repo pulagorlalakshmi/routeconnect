@@ -133,6 +133,50 @@ select {
   .rc-track-progress { transform: scaleX(1); }
 }
 
+/* Preference dialog (PreferenceModal.tsx / RouteMotionBackdrop.tsx): a quick fade + rise, a short stagger on the options,
+   and slow map-like motion behind (dotted routes flowing, stops breathing, the whole layer drifting). Only transform,
+   opacity and stroke-dashoffset are animated. Everything stops under prefers-reduced-motion. */
+@keyframes rc-pref-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes rc-pref-rise { from { opacity: 0; transform: translateY(28px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes rc-pref-item { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes rc-pref-dash { to { stroke-dashoffset: -320; } }
+@keyframes rc-pref-pulse { 0%, 100% { opacity: .55; transform: scale(.9); } 50% { opacity: 1; transform: scale(1.12); } }
+@keyframes rc-pref-drift { from { transform: translate3d(-12px, 6px, 0); } to { transform: translate3d(12px, -6px, 0); } }
+
+.rc-pref-overlay { animation: rc-pref-fade 200ms ease-out both; }
+.rc-pref-dialog { animation: rc-pref-rise 380ms cubic-bezier(.2, .9, .25, 1) 40ms both; }
+.rc-pref-option { animation: rc-pref-item 320ms cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(140ms + var(--i, 0) * 35ms); }
+.rc-pref-backdrop { animation: rc-pref-fade 600ms ease-out both; }
+.rc-pref-flow { stroke-dasharray: 2 14; animation: rc-pref-dash 18s linear infinite; }
+.rc-pref-node { transform-box: fill-box; transform-origin: center; animation: rc-pref-pulse 4.2s ease-in-out infinite; }
+.rc-pref-drift { animation: rc-pref-drift 24s ease-in-out infinite alternate; will-change: transform; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rc-pref-overlay, .rc-pref-dialog, .rc-pref-option, .rc-pref-backdrop, .rc-pref-flow, .rc-pref-node, .rc-pref-drift { animation: none !important; }
+  .rc-pref-mover { display: none; }
+  .rc-pref-option { transition: none !important; }
+}
+
+/* Route discovery (RouteDiscovery.tsx): the panel that replaces the preference dialog while the real search runs, and
+   the results page's entrance. Marker and trail move by SMIL in the SVG; these CSS loops only touch transform, opacity and
+   stroke-dashoffset. Everything is static under prefers-reduced-motion. */
+@keyframes rc-disc-in { from { opacity: 0; transform: translateY(14px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes rc-disc-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-6px) scale(.985); } }
+@keyframes rc-disc-dash { to { stroke-dashoffset: -60; } }
+@keyframes rc-disc-breathe { 0%, 100% { opacity: .7; transform: scale(.92); } 50% { opacity: 1; transform: scale(1.08); } }
+@keyframes rc-results-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+.rc-disc-enter { animation: rc-disc-in 320ms cubic-bezier(.2, .9, .25, 1) both; }
+.rc-disc-exit { animation: rc-disc-out 200ms ease-in both; }
+.rc-disc-flow { animation: rc-disc-dash 3.6s linear infinite; }
+.rc-disc-flow-slow { animation-duration: 6s; }
+.rc-disc-node, .rc-disc-halo { transform-box: fill-box; transform-origin: center; animation: rc-disc-breathe 2.8s ease-in-out infinite; }
+.rc-results-enter { animation: rc-results-in 280ms cubic-bezier(.2, .8, .2, 1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rc-disc-enter, .rc-disc-exit, .rc-disc-flow, .rc-disc-node, .rc-disc-halo, .rc-results-enter { animation: none !important; }
+}
+
 /* Journey simulation strip (JourneySimulation.tsx): one vehicle, moved by a single requestAnimationFrame loop that writes
    its inline `left`/opacity and clips the "completed" line. There are no keyframes: only the vehicle's icon and colour
    cross-fade through transitions, which are switched off under prefers-reduced-motion (where no vehicle is shown at all:

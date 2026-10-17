@@ -12,6 +12,7 @@ import { fetchNearbyOsmStops } from './osmTransitService.js';
 import { validateRouteIntegrity } from './dataPipelineService.js';
 import { buildCompleteAirJourneys } from './flightService.js';
 import { isLegacyRideHailingEnabled, isRideHailingRoute, stampRideHailingRoute } from './rideHailing.js';
+import { stripTrainRoutes } from './trainDataPolicy.js';
 
 export function calculateSegmentPrice(mode, basePrice, passengers = 1) {
   if (mode === 'train' || mode === 'bus') {
@@ -408,7 +409,12 @@ function enrichRouteDetails(route, locFrom, locTo, villageAssistance) {
   return isRideHailingRoute(enriched) ? stampRideHailingRoute(enriched) : enriched;
 }
 
-export async function findMultiModalRoutes(fromCity, toCity, date, timeStr, passengersCount, originCoordinates = null) {
+// No legacy route may contain a train leg: the legacy train data is not a verified timetable (trainDataPolicy.js).
+export async function findMultiModalRoutes(...args) {
+  return stripTrainRoutes(await findMultiModalRoutesUnfiltered(...args));
+}
+
+async function findMultiModalRoutesUnfiltered(fromCity, toCity, date, timeStr, passengersCount, originCoordinates = null) {
   const normalizedFrom = fromCity.trim().toLowerCase();
   const normalizedTo = toCity.trim().toLowerCase();
   const passengers = parseInt(passengersCount) || 1;
@@ -423,7 +429,7 @@ export async function findMultiModalRoutes(fromCity, toCity, date, timeStr, pass
   try {
     const storedRoutes = getStoredMultiModalRoutes(fromCity, toCity, passengers);
     if (storedRoutes && storedRoutes.length > 0) {
-      candidateRoutes.push(...storedRoutes);
+      candidateRoutes.push(...stripTrainRoutes(storedRoutes));
     }
   } catch (err) {
     console.warn('Error reading stored multi-modal routes:', err.message);
@@ -1072,7 +1078,7 @@ export async function findMultiModalRoutes(fromCity, toCity, date, timeStr, pass
     try {
       const airJourneys = await buildCompleteAirJourneys(fromCity, toCity, date, isCurrentGpsOrigin ? originCoordinates : null, passengers);
       if (airJourneys && airJourneys.length > 0) {
-        candidateRoutes.push(...airJourneys);
+        candidateRoutes.push(...stripTrainRoutes(airJourneys));
       }
     } catch (err) {
       console.warn('Air journeys calculation warning:', err.message);

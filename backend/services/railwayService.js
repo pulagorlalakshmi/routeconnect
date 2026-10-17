@@ -1,11 +1,10 @@
-// Indian Railways Transit Service
-// Provides authoritative train schedules, train numbers, names, running days,
-// intermediate halt stations, distances, class fares, and connecting train transfers.
-// Never invents fictional train numbers or fake timetables.
+// Legacy train lookups over hand-written sample data (STATIC_TRAIN_SERVICES and seeded `segments` rows).
+// That data is NOT a verified timetable, so both lookups are disabled (see trainDataPolicy.js) and return no trains.
 
 import { STATIC_TRAIN_SERVICES } from '../db/staticTransitData.js';
 import { db } from '../db/database.js';
 import { normalizePlaceKey, getDistance } from './geoService.js';
+import { LEGACY_TRAIN_DATA_ENABLED } from './trainDataPolicy.js';
 
 function matchStation(stationName, candidateStr) {
   if (!stationName || !candidateStr) return false;
@@ -19,6 +18,7 @@ function matchStation(stationName, candidateStr) {
 }
 
 export function findDirectTrains(fromStationName, toStationName, passengers = 1) {
+  if (!LEGACY_TRAIN_DATA_ENABLED) return [];
   const directOptions = [];
   const normFrom = normalizePlaceKey(fromStationName);
   const normTo = normalizePlaceKey(toStationName);
@@ -117,6 +117,7 @@ export function isTrainRunningOnDate(train, dateStr) {
 }
 
 export function findConnectingTrains(fromStationName, toStationName, passengers = 1, travelDate = null) {
+  if (!LEGACY_TRAIN_DATA_ENABLED) return [];
   // Major junction transfer hubs & candidate rail junction points
   const candidateJunctions = [
     { name: 'Vijayawada Railway Station', code: 'BZA' },

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { MapPin, LogOut, User, Menu, X, Trash2, Bookmark, Briefcase } from 'lucide-react';
+import { MapPin, LogOut, User, Menu, X, Trash2, Bookmark, Briefcase, FileText } from 'lucide-react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 
 interface SavedTrip {
@@ -95,6 +95,7 @@ export default function Navbar() {
     { name: 'Home', path: '/dashboard', icon: MapPin },
     { name: 'My Trips', path: '#my-trips', icon: Briefcase, action: openMyTripsModal },
     { name: 'Saved Routes', path: '#saved', icon: Bookmark, action: openSavedRoutesModal },
+    { name: 'Data & Policies', path: '/about-data', icon: FileText },
     {
       name: 'Profile',
       path: '/profile',

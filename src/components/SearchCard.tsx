@@ -23,7 +23,7 @@ interface SearchCardProps {
 const fieldClass = 'w-full pl-11 pr-3 py-3.5 text-base font-semibold text-[#1F2933] border border-[#D0D9D5] rounded-xl bg-white outline-none transition hover:border-[#B9C6C1] focus:border-[#146B5B] focus:ring-2 focus:ring-[#146B5B]/20';
 
 // The home search card: From and To stacked (with one obvious swap button between them), then date and time, then a
-// single primary action. Nothing else competes for attention.
+// single primary action. Nothing else competes for attention: preferences are asked only after "Find routes".
 export default function SearchCard({
   from,
   to,
@@ -119,7 +119,7 @@ export default function SearchCard({
         className="mt-7 w-full inline-flex items-center justify-center gap-2 rounded-xl bg-[#146B5B] hover:bg-[#0f5447] text-white px-8 py-4 text-base font-extrabold shadow-md hover:shadow-lg transition focus:outline-none focus-visible:ring-4 focus-visible:ring-[#146B5B]/30 disabled:cursor-not-allowed disabled:opacity-40"
       >
         <Search aria-hidden className="h-5 w-5" />
-        {loading ? 'Searching…' : 'Search routes'}
+        {loading ? 'Searching…' : 'Find routes'}
       </button>
     </form>
   );

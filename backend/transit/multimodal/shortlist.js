@@ -11,9 +11,14 @@
 //      of each mode) first, then the strongest remaining clusters, preferring departure times and modes not yet shown.
 //   6. Labels are re-computed on the final list, so every claim is true of what the user sees.
 // No category is created without data: a mode with no candidate simply does not appear.
+//
+// With a user PRIORITY (options.priority: best | fastest | cost | transfers, see preferences.js) the strongest journeys
+// by that priority are chosen first (still one per cluster, up to half the list), and the final list is ORDERED by it.
+// Without a priority the behaviour is exactly the original one (category winners first, ordered by departure).
 import { rateJourneys, bestPathIds, fareMidpoint } from '../rating/pathRating.js';
 import { lowerEstimatedCostWinner } from '../routing/ranking.js';
 import { JOURNEY_LABELS } from '../routing/types.js';
+import { comparatorFor, RANK_PRIORITIES } from './preferences.js';
 
 export const SHORTLIST_DEFAULTS = Object.freeze({
   maxResults: 7,
@@ -101,6 +106,7 @@ export function clusterKey(journey, bandSeconds = SHORTLIST_DEFAULTS.departureBa
  */
 export function buildShortlist(candidates, options = {}) {
   const opts = { ...SHORTLIST_DEFAULTS, ...options };
+  const priority = RANK_PRIORITIES.includes(opts.priority) ? opts.priority : null;
   const deduped = dedupeSameVehicles(candidates);
   const pareto = paretoComplete(deduped);
   if (pareto.length === 0) return { journeys: [], winners: {}, stats: { candidates: candidates.length, afterDedupe: deduped.length, afterPareto: 0, clusters: 0, returned: 0 } };
@@ -140,6 +146,17 @@ export function buildShortlist(candidates, options = {}) {
     if (chosen.some(other => keyOf.get(other) === keyOf.get(entry))) return;
     chosen.push(entry);
   };
+  if (priority) {
+    // The user's priority leads: its strongest journeys (one per cluster) fill up to half the list.
+    const rawOf = new Map(rated.map(entry => [entry.journey, entry.raw]));
+    const compare = comparatorFor(priority, journey => rawOf.get(journey));
+    const byPriority = [...rated].sort((a, b) => compare(a.journey, b.journey));
+    const quota = Math.ceil(opts.maxResults / 2);
+    for (const entry of byPriority) {
+      if (chosen.length >= quota) break;
+      take(entry);
+    }
+  }
   take(rated[0]);        // best overall (rated was sorted by raw above)
   take(fastest);
   take(fewest);
@@ -178,7 +195,8 @@ export function buildShortlist(candidates, options = {}) {
   const lowerCost = lowerEstimatedCostWinner(finalJourneys, opts.ranking);
   if (lowerCost) label(lowerCost, JOURNEY_LABELS.LOWER_ESTIMATED_COST);
 
-  finalJourneys.sort((a, b) => ms(a.departureTime) - ms(b.departureTime) || ms(a.arrivalTime) - ms(b.arrivalTime) || a.id.localeCompare(b.id));
+  if (priority) finalJourneys.sort(comparatorFor(priority, journey => journey.rating.raw));
+  else finalJourneys.sort((a, b) => ms(a.departureTime) - ms(b.departureTime) || ms(a.arrivalTime) - ms(b.arrivalTime) || a.id.localeCompare(b.id));
   const idOf = name => finalJourneys.find(j => j.labels.includes(name))?.id ?? null;
   return {
     journeys: finalJourneys,
@@ -194,6 +212,7 @@ export function buildShortlist(candidates, options = {}) {
       afterPareto: pareto.length,
       clusters: clusters.size,
       returned: finalJourneys.length,
+      priority,
       modes: Object.fromEntries([...modesAvailable].map(mode => [mode, rated.filter(e => primaryModeOf(e.journey) === mode).length]))
     }
   };

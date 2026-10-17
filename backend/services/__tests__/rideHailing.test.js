@@ -109,9 +109,11 @@ describe('product decision: ride-hailing is OFF by default', () => {
   });
 
   test('a GPS search never produces Uber/Rapido options, priced or not, even on a short trip', async () => {
-    for (const [to, origin] of [['Ongole Railway Station', GPS_ONGOLE], ['Kalla Bus Stop', GPS_BHIMAVARAM], ['Vijayawada', GPS_BHIMAVARAM]]) {
+    // Vijayawada from a Bhimavaram GPS fix used to be served only by sample "Bus + Train" routes; with the unverified
+    // legacy train data disabled (trainDataPolicy.js) it may legitimately return nothing, but never a ride-hailing option.
+    for (const [to, origin, expectRoutes] of [['Ongole Railway Station', GPS_ONGOLE, true], ['Kalla Bus Stop', GPS_BHIMAVARAM, true], ['Vijayawada', GPS_BHIMAVARAM, false]]) {
       const routes = await search(CURRENT, to, origin);
-      assert.ok(routes.length > 0, `public-transport routes are still returned for ${to}`);
+      if (expectRoutes) assert.ok(routes.length > 0, `public-transport routes are still returned for ${to}`);
       for (const route of routes) {
         assert.equal(isRideHailingRoute(route), false, `ride-hailing leaked into ${to}`);
         assert.ok(!/uber|rapido/i.test(JSON.stringify(route)), `ride-hailing text leaked into ${to}`);
@@ -187,31 +189,40 @@ describe('planner: public transit behaviour is unchanged', () => {
     }
   });
 
-  // Golden values captured from the planner BEFORE the ride-hailing change: [routeName, tag, price, minutes, transfers].
-  test('Bhimavaram -> Vijayawada ranking is identical to the pre-change output', async () => {
+  // The pre-change golden output also contained sample trains (now disabled, see trainDataPolicy.js). Every BUS route
+  // of that golden output must survive unchanged: [name without the "Route N – " prefix, price, minutes, transfers].
+  const busCore = r => [r.routeName.replace(/^Route \d+ – /, ''), r.totalPrice, r.totalDurationMinutes, r.totalTransfers];
+  const noTrainLegs = routes => routes.every(r => r.segments.every(s => s.mode !== 'train' && !s.trainNumber));
+
+  test('Bhimavaram -> Vijayawada keeps every pre-change bus route and returns no sample trains', async () => {
     const routes = await search('Bhimavaram', 'Vijayawada');
+    assert.ok(noTrainLegs(routes));
+    const cores = routes.map(busCore);
+    for (const expected of [['Bus Only', 320, 170, 0]]) assert.ok(cores.some(c => JSON.stringify(c) === JSON.stringify(expected)), JSON.stringify(expected));
+    // Golden output after the train data was disabled: [routeName, tag, price, minutes, transfers].
     assert.deepEqual(routes.map(r => [r.routeName, r.tag, r.totalPrice, r.totalDurationMinutes, r.totalTransfers]), [
-      ['Route 1 – Train Only', 'budget', 60, 130, 0],
-      ['Route 2 – Train Only', 'best', 75, 145, 0],
-      ['Route 3 – Train Only', null, 240, 135, 0],
-      ['Route 4 – Train Only', null, 420, 135, 0],
-      ['Route 5 – Train Only', null, 145, 145, 0],
-      ['Route 6 – Bus + Train', null, 196, 161, 3],
-      ['Route 7 – Bus Only', null, 320, 170, 0],
-      ['Route 8 – Train Only', null, 166, 172, 3]
+      ['Route 1 – Bus Only', 'fastest', 320, 170, 0],
+      ['Route 2 – Bus Only', 'budget', 140, 250, 0],
+      ['Route 3 – Bus Only', 'best', 180, 195, 0],
+      ['Route 4 – Bus Only', null, 240, 185, 0],
+      ['Route 5 – Route – Bus Only via Eluru Bus Station', null, 240, 200, 1],
+      ['Route 6 – Route – Bus Only via Tadepalligudem Bus Station', null, 240, 201, 1],
+      ['Route 7 – Route – Bus Only via Tanuku Bus Station', null, 220, 214, 1],
+      ['Route 8 – Route – Bus via Undi & Tanuku Bus Station', null, 312, 287, 2]
     ]);
   });
 
-  test('Narasaraopet -> Ongole (corridor) ranking is identical to the pre-change output', async () => {
+  test('Narasaraopet -> Ongole (corridor) keeps every pre-change bus route and returns no sample trains', async () => {
     const routes = await search('Narasaraopet', 'Ongole');
-    assert.deepEqual(routes.map(r => [r.routeName, r.tag, r.totalPrice, r.totalDurationMinutes, r.totalTransfers]), [
-      ['Route 1 – Bus Only: Via Addanki', 'fastest', 110, 105, 1],
-      ['Route 2 – Train Only', 'budget', 85, 140, 0],
-      ['Route 3 – Bus Only: Via Chilakaluripeta', 'best', 125, 115, 1],
-      ['Route 4 – Bus Only', null, 101, 119, 2],
-      ['Route 5 – Bus Only', null, 115, 132, 2],
-      ['Route 6 – Bus Only', null, 144, 148, 2],
-      ['Route 7 – Train Only', null, 250, 183, 3]
-    ]);
+    assert.ok(noTrainLegs(routes));
+    const cores = routes.map(busCore);
+    for (const expected of [
+      ['Bus Only: Via Addanki', 110, 105, 1],
+      ['Bus Only: Via Chilakaluripeta', 125, 115, 1],
+      ['Bus Only', 101, 119, 2],
+      ['Bus Only', 115, 132, 2],
+      ['Bus Only', 144, 148, 2]
+    ]) assert.ok(cores.some(c => JSON.stringify(c) === JSON.stringify(expected)), JSON.stringify(expected));
+    assert.equal(routes.length, 5);
   });
 });

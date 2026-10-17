@@ -175,6 +175,7 @@ export type RatingLabel = 'Excellent' | 'Very Good' | 'Good' | 'Fair' | 'Limited
 // Best Path Rating (0-10), computed by the backend from the journey data. A parameter score of null means N/A.
 export interface PathRating {
   score: number;
+  raw?: number; // unrounded score; the Best overall ordering and the Best path badge both use it
   label: RatingLabel;
   summary: string;
   parameters: Record<RatingParameterKey, { score: number | null; weight: number }>;
@@ -258,6 +259,8 @@ export interface PlanResponse {
   search?: { windowRequestedMinutes: number; windowUsedMinutes: number | null; windowExpanded: boolean; stageUsed: string | null; radiusUsedMeters: number | null };
   diagnostics?: PlanDiagnostics | null;
   winners: { fastest: string | null; leastTransfers: string | null; bestBalanced: string | null; lowerEstimatedCost?: string | null; bestPath?: string | null };
+  // The travel preferences the server applied (echo of the request).
+  preferences?: { modes: string[]; rank: 'best' | 'fastest' | 'cost' | 'transfers' | null };
   journeys: Journey[];
   performance: { queryTimeMs: number };
 }
@@ -272,7 +275,7 @@ export interface PlaceSuggestion {
   matchedBy: string;
 }
 
-export type PlanErrorCode = 'PLACE_NOT_FOUND' | 'INVALID_QUERY' | 'DATA_UNAVAILABLE' | 'OFFLINE' | 'SERVER_ERROR';
+export type PlanErrorCode = 'PLACE_NOT_FOUND' | 'INVALID_QUERY' | 'DATA_UNAVAILABLE' | 'MODE_UNAVAILABLE' | 'OFFLINE' | 'TIMEOUT' | 'SERVER_ERROR';
 
 export class PlanError extends Error {
   code: PlanErrorCode;
@@ -297,6 +300,9 @@ export interface PlanParams {
   time: string;
   windowMinutes?: number;
   maxTransfers?: number;
+  // Travel preferences: a hard mode filter and the ranking priority, applied by the server's shortlist.
+  modes?: string[];
+  rank?: string;
 }
 
 async function readJson(response: Response): Promise<any> {
@@ -323,6 +329,8 @@ export async function fetchPlan(params: PlanParams, signal?: AbortSignal): Promi
   }
   if (params.windowMinutes !== undefined) search.set('windowMinutes', String(params.windowMinutes));
   if (params.maxTransfers !== undefined) search.set('maxTransfers', String(params.maxTransfers));
+  if (params.modes && params.modes.length > 0) search.set('modes', params.modes.join(','));
+  if (params.rank) search.set('rank', params.rank);
 
   let response: Response;
   try {
@@ -340,6 +348,9 @@ export async function fetchPlan(params: PlanParams, signal?: AbortSignal): Promi
   }
   if (response.status === 400) {
     throw new PlanError('INVALID_QUERY', body?.error ?? 'The search is not valid.', { details: body?.details });
+  }
+  if (response.status === 422 && body?.code === 'MODE_UNAVAILABLE') {
+    throw new PlanError('MODE_UNAVAILABLE', body.error);
   }
   if (response.status === 503) {
     throw new PlanError('DATA_UNAVAILABLE', body?.error ?? 'Transit data is not available on the server.');

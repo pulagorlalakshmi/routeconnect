@@ -1,49 +1,113 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import Navbar from '../components/Navbar';
 import SearchCard from '../components/SearchCard';
+import PreferenceModal from '../components/PreferenceModal';
+import RouteDiscovery from '../components/RouteDiscovery';
+import type { DiscoveryError } from '../components/RouteDiscovery';
+import { PlanError } from '../services/planService';
+import { planParamsFromSearch, runPlanSearch } from '../services/planRequest';
+import { prefersReducedMotion } from '../utils/trackingLaunch';
 import RouteBuddyMapBackground from '../components/RouteBuddyMapBackground';
-import { nowLocalHHMM, todayLocalIso } from '../utils/dateTime';
+import { formatDateLabel, nowLocalHHMM, todayLocalIso } from '../utils/dateTime';
+import {
+  CURRENT_LOCATION_LABEL,
+  EMPTY_PLACE,
+  editPlaceText,
+  isCurrentLocationText,
+  isSamePlace,
+  swapPlaces
+} from '../utils/locationValue';
+import type { Coordinates, PlaceValue } from '../utils/locationValue';
+import { DEFAULT_PREFERENCES, loadPreferences, savePreferences, writePreferenceParams } from '../utils/travelPreferences';
+import type { TravelPreferences } from '../utils/travelPreferences';
 
-interface Coordinates {
-  lat: number;
-  lng: number;
+const SAME_PLACE_MESSAGE = 'Your starting point and destination are the same. Choose two different places.';
+
+// A fast search still shows the discovery panel briefly (no flash), then fades out; a slow one simply loops until the
+// real request finishes. Nobody is made to wait for the animation beyond this.
+const MIN_DISCOVERY_MS = 700;
+const DISCOVERY_EXIT_MS = 200;
+const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+type SearchPhase =
+  | { kind: 'choose' }
+  | { kind: 'searching' | 'leaving'; preferences: TravelPreferences }
+  | { kind: 'error'; preferences: TravelPreferences; error: DiscoveryError };
+
+// What went wrong, in words, and whether simply trying again can help.
+function describeSearchError(error: unknown): DiscoveryError {
+  if (error instanceof PlanError) {
+    switch (error.code) {
+      case 'PLACE_NOT_FOUND':
+        return { title: 'We couldn’t find that place', message: `“${error.query ?? 'That place'}” isn’t a stop in the transit timetable. Choose a suggestion while typing, or try a nearby town or bus stand.`, canRetry: false };
+      case 'MODE_UNAVAILABLE':
+        return { title: 'Not available yet', message: error.message, canRetry: false };
+      case 'OFFLINE':
+        return { title: 'Can’t reach RouteConnect', message: 'Check your connection, then try again.', canRetry: true };
+      case 'TIMEOUT':
+        return { title: 'This is taking too long', message: 'The search didn’t finish in time. Try again, or adjust the time or places.', canRetry: true };
+      case 'DATA_UNAVAILABLE':
+        return { title: 'Timetable data isn’t ready', message: 'The server is still loading its timetable data. Try again in a moment.', canRetry: true };
+      case 'INVALID_QUERY':
+        return { title: 'Something in this search isn’t valid', message: error.message, canRetry: false };
+      default:
+        return { title: 'Search unavailable', message: error.message, canRetry: true };
+    }
+  }
+  return { title: 'Search unavailable', message: 'The route planner could not complete this search.', canRetry: true };
 }
-
-const CURRENT_LOCATION_PATTERN = /^(?:📍\s*)?(?:my\s+)?current\s*location$/i;
 
 export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
-  // Coordinates are only known when a place was picked from the list/map or GPS was used; typed names are
-  // resolved against the timetable stops by the server.
-  const [fromCoords, setFromCoords] = useState<Coordinates | null>(null);
-  const [toCoords, setToCoords] = useState<Coordinates | null>(null);
+  // From and To are whole place objects (text + coordinates when known) held together, so a swap moves both at once.
+  // Coordinates are only known when a place was picked from the list/map or GPS was used; typed names are resolved
+  // against the timetable stops by the server.
+  const [places, setPlaces] = useState<{ from: PlaceValue; to: PlaceValue }>({ from: EMPTY_PLACE, to: EMPTY_PLACE });
   const [validationError, setValidationError] = useState('');
   const [date, setDate] = useState(() => todayLocalIso());
   const [time, setTime] = useState(() => nowLocalHHMM());
+  // A validated search waiting for the preference step ("Any preferences?"); null while the form is in charge.
+  const [pending, setPending] = useState<{ params: URLSearchParams; from: string; to: string; when: string; initial: TravelPreferences } | null>(null);
+  // After "Show routes" / "Skip": the real search runs while the discovery panel plays in the same overlay.
+  const [phase, setPhase] = useState<SearchPhase>({ kind: 'choose' });
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+  // The one search in flight. Anything that finishes for an older or cancelled search is ignored, so there are no
+  // duplicate submissions and no state updates after leaving the page.
+  const searchRef = useRef<AbortController | null>(null);
+  useEffect(() => () => { searchRef.current?.abort(); searchRef.current = null; }, []);
+
+  const from = places.from.text;
+  const to = places.to.text;
+  const samePlace = from.trim().length > 0 && to.trim().length > 0 && isSamePlace(places.from, places.to);
 
   const handleSearch = async () => {
-    if (!from || !to) {
+    if (pending) return;
+    if (!from.trim() || !to.trim()) {
       setValidationError('Enter both a starting point and a destination to search.');
       return;
     }
-    if (from.trim().toLowerCase() === to.trim().toLowerCase()) {
-      setValidationError('Your starting point and destination are the same. Choose two different places.');
+    if (samePlace) {
+      setValidationError(SAME_PLACE_MESSAGE);
       return;
     }
     if (!date || !time) {
       setValidationError('Choose a date and a departure time.');
       return;
     }
+    // "Current location" is offered for the start only. It can reach To through a swap, but only with its coordinates.
+    if (isCurrentLocationText(to) && !places.to.coords) {
+      setValidationError('Choose a destination: search for a place or select it on the map.');
+      return;
+    }
 
     setValidationError('');
 
-    let originCoordinates = fromCoords;
-    if (!originCoordinates && CURRENT_LOCATION_PATTERN.test(from.trim())) {
+    let originCoordinates: Coordinates | null = places.from.coords;
+    if (!originCoordinates && isCurrentLocationText(from)) {
       if (!navigator.geolocation) {
         setValidationError('Geolocation is not supported by your browser. Enter a starting place instead.');
         return;
@@ -60,7 +124,69 @@ export default function Dashboard() {
           : 'Unable to determine your current location. Try again or enter a starting place.');
         return;
       }
+      // The device location may turn out to be the chosen destination.
+      if (isSamePlace({ text: from, coords: originCoordinates }, places.to)) {
+        setValidationError(SAME_PLACE_MESSAGE);
+        return;
+      }
     }
+
+    const params = new URLSearchParams({
+      from: originCoordinates && isCurrentLocationText(from) ? CURRENT_LOCATION_LABEL : from.trim(),
+      to: to.trim(),
+      date,
+      time
+    });
+    if (originCoordinates) {
+      params.set('fromLat', String(originCoordinates.lat));
+      params.set('fromLng', String(originCoordinates.lng));
+    }
+    if (places.to.coords) {
+      params.set('toLat', String(places.to.coords.lat));
+      params.set('toLng', String(places.to.coords.lng));
+    }
+    // Intent is confirmed: now (and only now) ask about preferences, pre-filled with the last choice.
+    setPending({
+      params,
+      from: params.get('from') ?? from.trim(),
+      to: to.trim(),
+      when: `${formatDateLabel(date)}, ${time}`,
+      initial: loadPreferences()
+    });
+  };
+
+  // Runs the real search for these preferences. Resolves into navigation (results, empty or not) or an in-place error.
+  const startSearch = (preferences: TravelPreferences, baseParams: URLSearchParams) => {
+    if (searchRef.current) return; // a search is already running
+    const url = writePreferenceParams(preferences, new URLSearchParams(baseParams));
+    const controller = new AbortController();
+    searchRef.current = controller;
+    const isCurrent = () => searchRef.current === controller && !controller.signal.aborted;
+    const started = performance.now();
+    setPhase({ kind: 'searching', preferences });
+
+    runPlanSearch(planParamsFromSearch(url), controller.signal)
+      .then(async () => {
+        // The response is cached for the results page, which shows it without asking the server again.
+        await pause(Math.max(0, MIN_DISCOVERY_MS - (performance.now() - started)));
+        if (!isCurrent()) return;
+        setPhase({ kind: 'leaving', preferences });
+        await pause(prefersReducedMotion() ? 0 : DISCOVERY_EXIT_MS);
+        if (!isCurrent()) return;
+        searchRef.current = null;
+        navigate(`/search-results?${url.toString()}`);
+      })
+      .catch(error => {
+        if (!isCurrent()) return; // cancelled, superseded or unmounted
+        searchRef.current = null;
+        setPhase({ kind: 'error', preferences, error: describeSearchError(error) });
+      });
+  };
+
+  const handleConfirmPreferences = (preferences: TravelPreferences) => {
+    if (!pending || phase.kind !== 'choose') return;
+    savePreferences(preferences);
+    setPending({ ...pending, initial: preferences });
 
     // Remember the search in the browser (My Trips)
     try {
@@ -78,42 +204,39 @@ export default function Dashboard() {
       console.error('Failed to save to localStorage:', e);
     }
 
-    const params = new URLSearchParams({
-      from: originCoordinates && CURRENT_LOCATION_PATTERN.test(from.trim()) ? '📍 Current Location' : from.trim(),
-      to: to.trim(),
-      date,
-      time
-    });
-    if (originCoordinates) {
-      params.set('fromLat', String(originCoordinates.lat));
-      params.set('fromLng', String(originCoordinates.lng));
+    startSearch(preferences, pending.params);
+  };
+
+  const cancelSearch = useCallback(() => {
+    searchRef.current?.abort();
+    searchRef.current = null;
+  }, []);
+
+  // Escape / Back / ✕: from the preferences, back to the form; from the search, stop it and return to the preferences.
+  const handleClosePreferences = useCallback(() => {
+    if (phaseRef.current.kind === 'choose') {
+      setPending(null);
+      return;
     }
-    if (toCoords) {
-      params.set('toLat', String(toCoords.lat));
-      params.set('toLng', String(toCoords.lng));
-    }
-    navigate(`/search-results?${params.toString()}`);
+    cancelSearch();
+    setPhase({ kind: 'choose' });
+  }, [cancelSearch]);
+
+  const closeFlow = () => {
+    cancelSearch();
+    setPhase({ kind: 'choose' });
+    setPending(null);
   };
 
-  const handleFromChange = (value: string) => {
-    setFrom(value);
-    // Editing the text invalidates coordinates picked earlier (unless it is still "current location").
-    if (!CURRENT_LOCATION_PATTERN.test(value.trim())) setFromCoords(null);
-  };
+  const setFromCoords = (lat: number, lng: number) => setPlaces(prev => ({ ...prev, from: { ...prev.from, coords: { lat, lng } } }));
+  const setToCoords = (lat: number, lng: number) => setPlaces(prev => ({ ...prev, to: { ...prev.to, coords: { lat, lng } } }));
+  // Editing the text invalidates coordinates picked earlier (unless it is still "current location").
+  const handleFromChange = (value: string) => setPlaces(prev => ({ ...prev, from: editPlaceText(prev.from, value) }));
+  const handleToChange = (value: string) => setPlaces(prev => ({ ...prev, to: editPlaceText(prev.to, value) }));
+  const handleSwap = () => setPlaces(prev => swapPlaces(prev));
 
-  const handleToChange = (value: string) => {
-    setTo(value);
-    setToCoords(null);
-  };
-
-  const handleSwap = () => {
-    setFrom(to);
-    setTo(from);
-    setFromCoords(toCoords);
-    setToCoords(fromCoords);
-  };
-
-  const isValid = from.trim().length > 0 && to.trim().length > 0 && from.trim().toLowerCase() !== to.trim().toLowerCase() && Boolean(date) && Boolean(time);
+  const isValid = from.trim().length > 0 && to.trim().length > 0 && !samePlace && Boolean(date) && Boolean(time);
+  const errorMessage = validationError || (samePlace ? SAME_PLACE_MESSAGE : '');
 
   return (
     <div className="route-buddy-dashboard min-h-screen text-[#1F2933] flex flex-col">
@@ -132,10 +255,10 @@ export default function Dashboard() {
             date={date}
             time={time}
             onFromChange={handleFromChange}
-            onCurrentLocation={(lat, lng) => setFromCoords({ lat, lng })}
-            onFromCoordinates={(lat, lng) => setFromCoords({ lat, lng })}
+            onCurrentLocation={setFromCoords}
+            onFromCoordinates={setFromCoords}
             onToChange={handleToChange}
-            onToCoordinates={(lat, lng) => setToCoords({ lat, lng })}
+            onToCoordinates={setToCoords}
             onDateChange={setDate}
             onTimeChange={setTime}
             onSwapLocations={handleSwap}
@@ -143,13 +266,34 @@ export default function Dashboard() {
             loading={false}
             isValid={isValid}
           />
-          {validationError && (
+          {errorMessage && (
             <p className="mt-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700" role="alert">
-              {validationError}
+              {errorMessage}
             </p>
           )}
         </div>
       </main>
+
+      <PreferenceModal
+        open={pending !== null}
+        initial={pending?.initial ?? DEFAULT_PREFERENCES}
+        trip={pending ? { from: pending.from, to: pending.to, when: pending.when } : undefined}
+        onConfirm={handleConfirmPreferences}
+        onClose={handleClosePreferences}
+        stage={pending && phase.kind !== 'choose' ? (
+          <RouteDiscovery
+            from={pending.from}
+            to={pending.to}
+            preferences={phase.preferences}
+            state={phase.kind}
+            error={phase.kind === 'error' ? phase.error : null}
+            onCancel={handleClosePreferences}
+            onRetry={() => startSearch(phase.preferences, pending.params)}
+            onEditPreferences={() => setPhase({ kind: 'choose' })}
+            onChangeSearch={closeFlow}
+          />
+        ) : undefined}
+      />
     </div>
   );
 }

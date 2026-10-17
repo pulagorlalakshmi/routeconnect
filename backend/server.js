@@ -21,6 +21,7 @@ import { getHubMetrics, getConnectivity } from './transit/routing/hubs.js';
 import { handlePlaceSearch } from './transit/routing/placeSearch.js';
 import { getTransitConfig } from './transit/config.js';
 import { ensureTransitData } from './transit/ensureData.js';
+import { stripTrainRoutes, requestsTrainOnly, TRAIN_DATA_UNAVAILABLE } from './services/trainDataPolicy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -210,7 +211,8 @@ app.get('/api/routes/stored', (req, res) => {
     const from = String(req.query.from || '').trim();
     const to = String(req.query.to || '').trim();
     const passengers = parseInt(req.query.passengers) || 1;
-    const routes = getStoredMultiModalRoutes(from, to, passengers);
+    // Seeded routes with train legs are sample data, not a verified timetable: never returned.
+    const routes = stripTrainRoutes(getStoredMultiModalRoutes(from, to, passengers));
     return res.status(200).json({ routes });
   } catch (error) {
     console.error('Stored routes error:', error);
@@ -222,6 +224,10 @@ app.get('/api/routes/stored', (req, res) => {
 app.get('/api/planner', async (req, res) => {
   try {
     const { from, to, date, time, passengers } = req.query;
+    // No verified railway timetable is connected: a train-only request cannot be answered honestly.
+    if (requestsTrainOnly(req.query)) {
+      return res.status(501).json(TRAIN_DATA_UNAVAILABLE);
+    }
     if (!from || !to) {
       return res.status(400).json({ error: 'from and to locations are required' });
     }
@@ -276,7 +282,8 @@ app.get('/api/planner', async (req, res) => {
       routes,
       originType: (isExplicitCurrentLocation && originCoordinates) ? 'CURRENT_GPS_LOCATION' : 'NAMED_LOCATION',
       insights,
-      flightSearch
+      flightSearch,
+      trainSearch: { available: false, ...TRAIN_DATA_UNAVAILABLE }
     });
   } catch (error) {
     console.error('Planner error:', error);
@@ -380,7 +387,7 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({
     status: 'Server is running',
     service: 'RouteConnect Multi-Modal Transit Planner',
-    features: ['bus_network', 'train_network', 'multimodal_connections', 'village_coverage']
+    features: ['bus_network', 'multimodal_connections', 'village_coverage']
   });
 });
 

@@ -27,20 +27,20 @@ const toSuggestion = (place: PlaceSuggestion): SuggestionItem => ({
   lon: place.lon
 });
 
-// Quick actions offered in each field's dropdown, in order. The origin leads with "use my current location"; the
-// destination leads with "select on map" and keeps current location as a quiet last option. Only the origin's map
-// picker centres on the user's location as it opens.
+// Quick actions offered in each field's dropdown, in order. "Use my current location" belongs to the origin only: a
+// journey to where you already are is not a journey. The destination offers place search and "select on map". Only the
+// origin's map picker centres on the user's location as it opens.
 export type LocationKind = 'origin' | 'destination';
 export type QuickAction = 'current_location' | 'select_on_map';
 export function quickActionsFor(kind: LocationKind): { top: QuickAction[]; bottom: QuickAction[]; gpsButtonInField: boolean; locateOnMapOpen: boolean } {
   return kind === 'origin'
     ? { top: ['current_location', 'select_on_map'], bottom: [], gpsButtonInField: true, locateOnMapOpen: true }
-    : { top: ['select_on_map'], bottom: ['current_location'], gpsButtonInField: false, locateOnMapOpen: false };
+    : { top: ['select_on_map'], bottom: [], gpsButtonInField: false, locateOnMapOpen: false };
 }
 
 interface LocationInputProps {
-  // Origin and destination share one input, but "use my current location" is a primary action only for the origin:
-  // a destination offers it as a quiet secondary option and never requests the location on its own.
+  // Origin and destination share one input, but "use my current location" exists only for the origin: a destination
+  // never offers it and never requests the device location.
   kind?: LocationKind;
   label: string;
   placeholder: string;
@@ -56,7 +56,7 @@ export default function LocationInput({ kind = 'origin', label, placeholder, val
   const isOrigin = kind === 'origin';
   const actions = quickActionsFor(kind);
   const inputId = `location-${kind}-${useId()}`;
-  // A destination has no separate "current location" handler: its coordinates go through onCoordinates.
+  const allowsCurrentLocation = actions.top.includes('current_location') || actions.bottom.includes('current_location');
   const reportCurrentLocation = (lat: number, lng: number) => (onCurrentLocation ?? onCoordinates)?.(lat, lng);
   const [isFocused, setIsFocused] = useState(false);
   const [showMapPicker, setShowMapPicker] = useState(false);
@@ -243,6 +243,7 @@ export default function LocationInput({ kind = 'origin', label, placeholder, val
   };
 
   const handleUseCurrentLocation = () => {
+    if (!allowsCurrentLocation) return;
     setIsFocused(false);
     setPermissionError('');
     if (!navigator.geolocation) {
@@ -300,7 +301,7 @@ export default function LocationInput({ kind = 'origin', label, placeholder, val
       setIsFocused(false);
       return;
     }
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && allowsCurrentLocation) {
       const trimmed = value.trim().toLowerCase();
       if (/^(?:📍\s*)?(?:use\s+)?(?:my\s+)?current\s*location$/i.test(trimmed) || trimmed === 'here' || trimmed === 'gps') {
         e.preventDefault();
@@ -364,7 +365,7 @@ export default function LocationInput({ kind = 'origin', label, placeholder, val
     );
   };
 
-  const renderAction = (action: QuickAction, placement: 'top' | 'bottom') => {
+  const renderAction = (action: QuickAction) => {
     if (action === 'select_on_map') {
       return (
         <button
@@ -384,8 +385,7 @@ export default function LocationInput({ kind = 'origin', label, placeholder, val
         </button>
       );
     }
-    // A destination's "current location" is a quiet last option, worded so it cannot be mistaken for the start.
-    return placement === 'top' ? (
+    return (
       <button
         key={action}
         type="button"
@@ -396,18 +396,6 @@ export default function LocationInput({ kind = 'origin', label, placeholder, val
       >
         <Navigation className={`h-4 w-4 ${isRequestingPermission ? 'animate-spin' : ''}`} />
         {isRequestingPermission ? 'Finding your location…' : 'Use my current location'}
-      </button>
-    ) : (
-      <button
-        key={action}
-        type="button"
-        data-action={action}
-        onMouseDown={(e) => e.preventDefault()}
-        onClick={handleUseCurrentLocation}
-        className="w-full px-4 py-2 text-left text-xs font-semibold text-[#667085] hover:bg-[#F7FAF9] hover:text-[#1F2933] flex items-center gap-2 border-t border-[#EEF1EF] transition"
-      >
-        <Navigation className="h-3.5 w-3.5" />
-        Use my current location as the destination
       </button>
     );
   };
@@ -452,7 +440,7 @@ export default function LocationInput({ kind = 'origin', label, placeholder, val
         {/* Options while typing: quick actions first, then matching stops */}
         {isFocused && (
           <div id={`${inputId}-options`} className="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-xl border border-[#D9DED9] bg-white shadow-xl max-h-[340px] overflow-y-auto">
-            {actions.top.map(action => renderAction(action, 'top'))}
+            {actions.top.map(action => renderAction(action))}
 
             {filteredSuggestions.length > 0 ? (
               filteredSuggestions.map((item, idx) => {
@@ -463,7 +451,7 @@ export default function LocationInput({ kind = 'origin', label, placeholder, val
                     type="button"
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => {
-                      if (item.name === '📍 Current Location' || item.name === '📍 Use My Current Location' || item.name.toLowerCase().includes('current location')) {
+                      if (allowsCurrentLocation && (item.name === '📍 Current Location' || item.name === '📍 Use My Current Location' || item.name.toLowerCase().includes('current location'))) {
                         handleUseCurrentLocation();
                       } else {
                         onChange(item.name);
@@ -489,7 +477,7 @@ export default function LocationInput({ kind = 'origin', label, placeholder, val
               )
             )}
 
-            {actions.bottom.map(action => renderAction(action, 'bottom'))}
+            {actions.bottom.map(action => renderAction(action))}
           </div>
         )}
       </div>
@@ -579,7 +567,7 @@ export default function LocationInput({ kind = 'origin', label, placeholder, val
               className="flex-1 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-extrabold text-sm rounded-xl transition shadow-md hover:shadow-lg flex items-center justify-center gap-2"
             >
               <Check className="h-4 w-4 stroke-[3]" />
-              <span>{isOrigin ? 'Start from here' : 'Go here'}</span>
+              <span>Start from here</span>
             </button>
             <button
               type="button"
@@ -655,16 +643,16 @@ export default function LocationInput({ kind = 'origin', label, placeholder, val
               )}
 
               <div className="flex flex-col gap-3 sm:flex-row">
-                <button
-                  type="button"
-                  onClick={useCurrentLocationOnGoogleMap}
-                  disabled={geoLoading || Boolean(googleMapError)}
-                  className={isOrigin
-                    ? 'flex-1 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold rounded-xl transition shadow-md'
-                    : 'flex-1 py-3 border border-[#D9DED9] bg-white hover:bg-gray-50 disabled:opacity-50 text-[#475467] text-sm font-semibold rounded-xl transition'}
-                >
-                  {geoLoading ? 'Finding your location…' : 'Use my current location'}
-                </button>
+                {allowsCurrentLocation && (
+                  <button
+                    type="button"
+                    onClick={useCurrentLocationOnGoogleMap}
+                    disabled={geoLoading || Boolean(googleMapError)}
+                    className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold rounded-xl transition shadow-md"
+                  >
+                    {geoLoading ? 'Finding your location…' : 'Use my current location'}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => selectedMapLocation && confirmMapSelection(selectedMapLocation.address)}

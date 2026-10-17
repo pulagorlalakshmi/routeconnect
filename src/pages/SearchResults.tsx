@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import JourneyCard from '../components/JourneyCard';
 import type { SourceReport } from '../services/planService';
@@ -37,24 +37,41 @@ function Notice({ children, title }: { children: ReactNode; title?: string }) {
     </li>
   );
 }
-import LoadingState from '../components/LoadingState';
-import { fetchPlan, PlanError } from '../services/planService';
+import RouteDiscovery from '../components/RouteDiscovery';
+import { PlanError } from '../services/planService';
+import { planKey, planParamsFromSearch, recallPlan, runPlanSearch } from '../services/planRequest';
 import type { FailureCode, Journey, PlanResponse } from '../services/planService';
 import { addMinutes, clockOf, dateOf, formatDateLabel, nowLocalHHMM, todayLocalIso } from '../utils/dateTime';
-import { SlidersHorizontal, ArrowUpDown, X, Filter, ChevronLeft, Info } from 'lucide-react';
+import { SlidersHorizontal, ArrowUpDown, X, Filter, ChevronLeft, Info, FileText, ArrowRight } from 'lucide-react';
+import { comparableFare, compareJourneysFor, journeyMatchesModes, modeSummary, readPreferenceParams, writePreferenceParams } from '../utils/travelPreferences';
+import type { RankingPreference } from '../utils/travelPreferences';
 
-// Rural services are sparse, so look several hours ahead of the requested time.
-const WINDOW_MINUTES = 360;
-
-type SortKey = 'recommended' | 'earliest' | 'arrival' | 'fastest' | 'transfers';
+type SortKey = 'recommended' | 'earliest' | 'arrival' | 'fastest' | 'transfers' | 'cost';
 
 const SORT_OPTIONS: { id: SortKey; label: string }[] = [
-  { id: 'recommended', label: '⭐ Recommended' },
+  { id: 'recommended', label: '⭐ Best overall' },
   { id: 'earliest', label: '🌅 Earliest departure' },
   { id: 'arrival', label: '🏁 Earliest arrival' },
-  { id: 'fastest', label: '⚡ Shortest duration' },
-  { id: 'transfers', label: '🔄 Fewest transfers' }
+  { id: 'fastest', label: '⚡ Fastest' },
+  { id: 'transfers', label: '🔄 Fewest transfers' },
+  { id: 'cost', label: '💰 Lowest estimated cost' }
 ];
+
+// Plain wording for the subtle "Sorted by" line under the search summary.
+const SORT_LABEL: Record<SortKey, string> = {
+  // Same words as the preference dialog's "Show first" choices.
+  recommended: 'Best overall', earliest: 'Earliest departure', arrival: 'Earliest arrival',
+  fastest: 'Fastest', transfers: 'Fewest transfers', cost: 'Lowest estimated cost'
+};
+
+// General explanations live on the Data & policies page; only notes about THIS search stay on the results page.
+const SEARCH_SPECIFIC_INFO = new Set(['ORIGIN_DESTINATION_WALKABLE', 'SEARCH_WINDOW_EXPANDED', 'LOCAL_RIDE_HEAVY']);
+
+// The preference step's "Show first" choice (URL `rank`) IS the sort for these four keys; choosing one of them here
+// writes it back to the URL, so refresh, back/forward and "later departures" keep it. Earliest departure / arrival are
+// view-only orderings of the same list.
+const SORT_FOR_RANKING: Record<RankingPreference, SortKey> = { best: 'recommended', fastest: 'fastest', cost: 'cost', transfers: 'transfers' };
+const RANKING_FOR_SORT: Partial<Record<SortKey, RankingPreference>> = { recommended: 'best', fastest: 'fastest', cost: 'cost', transfers: 'transfers' };
 
 const NOTICE_HIDDEN = new Set(['SEARCH_DATE_OUTSIDE_FEED_VALIDITY', 'FEED_EXPIRED', 'NO_JOURNEY_FOUND']);
 
@@ -87,14 +104,6 @@ const departureSlot = (journey: Journey): 'morning' | 'afternoon' | 'evening' | 
   return 'night';
 };
 
-const labelWeight = (journey: Journey) => {
-  if (journey.labels.includes('BEST_PATH')) return -120;
-  if (journey.labels.includes('BEST_BALANCED')) return -100;
-  if (journey.labels.includes('FASTEST')) return -70;
-  if (journey.labels.includes('LEAST_TRANSFERS')) return -50;
-  return 0;
-};
-
 export default function SearchResults() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -107,15 +116,29 @@ export default function SearchResults() {
   const fromLng = finiteOrNull(searchParams.get('fromLng'));
   const toLat = finiteOrNull(searchParams.get('toLat'));
   const toLng = finiteOrNull(searchParams.get('toLng'));
+  const preferences = useMemo(() => readPreferenceParams(searchParams), [searchParams]);
+  const modesKey = preferences.modes.join(',');
+  // The latest URL, read when a request starts (changing only the sort must not trigger a new request).
+  const searchParamsRef = useRef(searchParams);
+  searchParamsRef.current = searchParams;
 
-  const [loading, setLoading] = useState(true);
+  // Seeded synchronously from the search flow's answer, so the first paint is already the results (no loader flash).
+  const [initialPlan] = useState(() => recallPlan(planKey(planParamsFromSearch(searchParams))));
+  const [loading, setLoading] = useState(initialPlan === null);
   const [error, setError] = useState<PlanError | Error | null>(null);
   const [retryCount, setRetryCount] = useState(0);
-  const [plan, setPlan] = useState<PlanResponse | null>(null);
+  const [plan, setPlan] = useState<PlanResponse | null>(initialPlan);
   const [showFilterPanel, setShowFilterPanel] = useState(false);
   const [showSortDropdown, setShowSortDropdown] = useState(false);
 
-  const [sortBy, setSortBy] = useState<SortKey>('recommended');
+  const [viewSort, setViewSort] = useState<'earliest' | 'arrival' | null>(null);
+  const sortBy: SortKey = viewSort ?? SORT_FOR_RANKING[preferences.ranking];
+  const chooseSort = (key: SortKey) => {
+    const ranking = RANKING_FOR_SORT[key];
+    if (!ranking) { setViewSort(key as 'earliest' | 'arrival'); return; }
+    setViewSort(null);
+    setSearchParams(writePreferenceParams({ ...preferences, ranking }, new URLSearchParams(searchParams)), { replace: true });
+  };
   const [transfers, setTransfers] = useState({ trans0: true, trans1: true, trans2: true, trans3plus: true });
   const [departureTimes, setDepartureTimes] = useState({ morning: true, afternoon: true, evening: true, night: true });
   const [durations, setDurations] = useState({ under2: true, hours2to4: true, hours4to8: true, over8: true });
@@ -128,30 +151,34 @@ export default function SearchResults() {
       return;
     }
 
+    // Arriving from the search flow: the response is already here (the discovery animation waited for it).
+    const params = planParamsFromSearch(searchParamsRef.current);
+    const cached = retryCount === 0 ? recallPlan(planKey(params)) : null;
+    if (cached) {
+      setPlan(cached);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+
+    // Refresh, a shared link, "later departures", My Trips: run the request here.
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    fetchPlan({
-      from,
-      to,
-      fromCoords: fromLat !== null && fromLng !== null ? { lat: fromLat, lng: fromLng } : null,
-      toCoords: toLat !== null && toLng !== null ? { lat: toLat, lng: toLng } : null,
-      date,
-      time,
-      windowMinutes: WINDOW_MINUTES
-    }, controller.signal)
+    runPlanSearch(params, controller.signal)
       .then(response => {
+        if (controller.signal.aborted) return;
         setPlan(response);
         setLoading(false);
       })
       .catch(err => {
-        if ((err as Error).name === 'AbortError') return;
+        if (controller.signal.aborted) return;
         setPlan(null);
         setError(err as Error);
         setLoading(false);
       });
     return () => controller.abort();
-  }, [from, to, date, time, fromLat, fromLng, toLat, toLng, retryCount, navigate]);
+  }, [from, to, date, time, fromLat, fromLng, toLat, toLng, modesKey, retryCount, navigate]);
 
   const handleClearFilters = () => {
     setTransfers({ trans0: true, trans1: true, trans2: true, trans3plus: true });
@@ -159,8 +186,14 @@ export default function SearchResults() {
     setDurations({ under2: true, hours2to4: true, hours4to8: true, over8: true });
   };
 
+  // Transport modes are a hard constraint from the search form, applied before the user's own filters.
+  const eligibleJourneys = useMemo(
+    () => (plan?.journeys ?? []).filter(journey => journeyMatchesModes(journey, preferences.modes)),
+    [plan, preferences]
+  );
+
   const visibleJourneys = useMemo(() => {
-    let result = [...(plan?.journeys ?? [])];
+    let result = [...eligibleJourneys];
 
     result = result.filter(journey => {
       const t = journey.transfers;
@@ -180,16 +213,23 @@ export default function SearchResults() {
       return durations.over8;
     });
 
+    // Same ordering as the server for the four preferences (compareJourneysFor mirrors its comparator); filters only
+    // remove journeys, they never reorder them.
     const byDeparture = (a: Journey, b: Journey) => a.departureTime.localeCompare(b.departureTime) || a.arrivalTime.localeCompare(b.arrivalTime);
-    result.sort((a, b) => {
-      if (sortBy === 'earliest') return byDeparture(a, b);
-      if (sortBy === 'arrival') return a.arrivalTime.localeCompare(b.arrivalTime) || byDeparture(a, b);
-      if (sortBy === 'fastest') return a.totalDurationSeconds - b.totalDurationSeconds || byDeparture(a, b);
-      if (sortBy === 'transfers') return a.transfers - b.transfers || byDeparture(a, b);
-      return labelWeight(a) - labelWeight(b) || byDeparture(a, b);
-    });
+    const ranking = RANKING_FOR_SORT[sortBy];
+    if (ranking) result.sort(compareJourneysFor(ranking));
+    else if (sortBy === 'arrival') result.sort((a, b) => a.arrivalTime.localeCompare(b.arrivalTime) || byDeparture(a, b));
+    else result.sort(byDeparture);
     return result;
-  }, [plan, sortBy, transfers, departureTimes, durations]);
+  }, [eligibleJourneys, sortBy, transfers, departureTimes, durations]);
+
+  const showAllModes = () => {
+    const params = new URLSearchParams(searchParams);
+    params.delete('modes');
+    setSearchParams(params);
+  };
+  const unpricedShown = sortBy === 'cost' && visibleJourneys.some(journey => comparableFare(journey) === null);
+
 
   const fromLabel = plan?.resolved?.from?.name ?? from;
   const toLabel = plan?.resolved?.to?.name ?? to;
@@ -206,7 +246,7 @@ export default function SearchResults() {
   };
 
   const noticeWarnings = (plan?.warnings ?? []).filter(w => w.severity === 'warning' && !NOTICE_HIDDEN.has(w.code) && !w.code.startsWith('NO_STOPS'));
-  const infoWarnings = (plan?.warnings ?? []).filter(w => w.severity === 'info');
+  const searchNotes = (plan?.warnings ?? []).filter(w => w.severity === 'info' && SEARCH_SPECIFIC_INFO.has(w.code));
   const noRouteDetail = noRouteMessage(plan?.diagnostics?.failureCode);
   const hasLocalRide = Boolean(plan?.journeys.some(j => j.localRideCount > 0));
   // One short schedule line instead of a warning block: inferred schedules are the common case with this dataset.
@@ -220,7 +260,7 @@ export default function SearchResults() {
     <div className="min-h-screen bg-[#F1F4F3] text-[#1F2933] flex flex-col">
       <Navbar />
 
-      <main className="flex-1 w-full max-w-4xl mx-auto px-4 py-8 space-y-6">
+      <main className="rc-results-enter flex-1 w-full max-w-4xl mx-auto px-4 py-8 space-y-6">
         <button
           onClick={() => navigate('/dashboard')}
           className="inline-flex items-center gap-1 text-xs font-black uppercase text-[#146B5B] hover:text-[#0f5447] transition mb-2"
@@ -234,6 +274,9 @@ export default function SearchResults() {
             <h1 className="text-2xl font-black text-[#1F2933]">{fromLabel} ➔ {toLabel}</h1>
             <p className="text-sm font-semibold text-[#667085] mt-1">
               📅 {formatDateLabel(date)} · 🕒 Departing after {time}
+            </p>
+            <p aria-label="Search preferences" className="text-xs font-semibold text-[#667085] mt-1.5">
+              Preference: {modeSummary(preferences.modes)} · Sorted by: {SORT_LABEL[sortBy]}
             </p>
           </div>
 
@@ -260,7 +303,7 @@ export default function SearchResults() {
                     {SORT_OPTIONS.map(option => (
                       <button
                         key={option.id}
-                        onClick={() => { setSortBy(option.id); setShowSortDropdown(false); }}
+                        onClick={() => { chooseSort(option.id); setShowSortDropdown(false); }}
                         className={`w-full text-left px-4 py-2.5 text-xs font-bold transition hover:bg-gray-50 ${sortBy === option.id ? 'bg-[#F4F2ED] text-[#146B5B]' : 'text-[#1F2933]'}`}
                       >
                         {option.label}
@@ -273,7 +316,11 @@ export default function SearchResults() {
           )}
         </div>
 
-        {loading && <LoadingState label="Searching travel options..." />}
+        {loading && (
+          <div className="mx-auto w-full max-w-md">
+            <RouteDiscovery variant="inline" from={from || 'Your start'} to={to || 'Your destination'} preferences={preferences} state="searching" />
+          </div>
+        )}
 
         {/* Errors */}
         {!loading && error && (
@@ -344,9 +391,10 @@ export default function SearchResults() {
               {plan.sources && plan.sources.length > 0 && <SourcesLine sources={plan.sources} />}
             </div>
 
-            {/* Page notices: one short line each, calm styling; the full text is in "About this data" below. */}
-            {(scheduleNotice || hasLocalRide || noticeWarnings.length > 0) && (
+            {/* Page notices: one short line each, calm styling; the full explanations are on the Data & policies page. */}
+            {(scheduleNotice || hasLocalRide || noticeWarnings.length > 0 || unpricedShown || searchNotes.length > 0) && (
               <ul aria-label="Notices" className="space-y-1.5">
+                {unpricedShown && <Notice>Options without a complete fare estimate are listed last, not treated as cheaper.</Notice>}
                 {scheduleNotice && (
                   <Notice title={plan.datasetWarning ?? undefined}>{scheduleNotice}</Notice>
                 )}
@@ -354,10 +402,23 @@ export default function SearchResults() {
                   <Notice title="No ride provider is connected, so availability is not verified.">Local ride times and fares are estimates.</Notice>
                 )}
                 {noticeWarnings.map(w => <Notice key={w.code}>{w.message}</Notice>)}
+                {searchNotes.map(w => <Notice key={w.code}>{w.message}</Notice>)}
               </ul>
             )}
 
-            {visibleJourneys.length === 0 ? (
+            {eligibleJourneys.length === 0 ? (
+              <div className="bg-white border border-[#D9DED9] rounded-xl p-10 text-center" role="status">
+                <p className="text-lg font-black text-[#1F2933]">No {modeSummary(preferences.modes).toLowerCase()} journeys found</p>
+                <p className="mt-1 text-xs text-[#667085]">Other options exist for this trip but do not match your travel preferences.</p>
+                <button
+                  type="button"
+                  onClick={showAllModes}
+                  className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-[#146B5B] px-4 py-2 text-xs font-bold text-white hover:bg-[#0f5447] transition"
+                >
+                  Show every available mode
+                </button>
+              </div>
+            ) : visibleJourneys.length === 0 ? (
               <div className="bg-white border border-[#D9DED9] rounded-xl p-10 text-center">
                 <p className="text-lg font-black text-[#1F2933]">No options match your filters</p>
                 <p className="mt-1 text-xs text-[#667085]">Open "Filters" to widen them.</p>
@@ -385,15 +446,17 @@ export default function SearchResults() {
               </button>
             </div>
 
-            <details className="rounded-xl border border-[#D9DED9] bg-white px-4 py-3 text-xs text-[#667085]">
-              <summary className="cursor-pointer font-bold text-[#1F2933]">About this data</summary>
-              <ul className="mt-2 list-disc pl-5 space-y-1">
-                {plan.datasetWarning && <li>{plan.datasetWarning}</li>}
-                {infoWarnings.map(w => <li key={w.code}>{w.message}</li>)}
-                {hasLocalRide && <li>A local ride is a generic auto / cab estimate to or from a stop. No ride provider is connected, so availability is not verified, and ride time and fare are approximate.</li>}
-                <li>Every option contains at least one bus from the timetable. A local ride only connects you to or from a bus stop; ride-only journeys and named ride-hailing services are never shown.</li>
-              </ul>
-            </details>
+            <p className="text-center text-xs text-[#667085]">
+              Where these routes, times and fares come from:{' '}
+              <Link
+                to="/about-data"
+                className="inline-flex items-center gap-1 font-bold text-[#146B5B] underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[#146B5B] rounded"
+              >
+                <FileText aria-hidden className="h-3.5 w-3.5" />
+                Data &amp; policies
+                <ArrowRight aria-hidden className="h-3 w-3" />
+              </Link>
+            </p>
           </div>
         )}
       </main>

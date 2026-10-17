@@ -77,7 +77,7 @@ describe('1. search form', () => {
   test('keeps only From, To, Date, Depart after and one primary Search button, with the agreed wording', () => {
     const markup = card();
     const text = strip(markup);
-    assert.match(text, /^Plan your journey From To Date Depart after \(India time\) Search routes$/);
+    assert.match(text, /^Plan your journey From To Date Depart after \(India time\) Find routes$/);
     assert.equal((markup.match(/<input /g) || []).length, 4, 'four fields, nothing else');
     assert.equal((markup.match(/type="submit"/g) || []).length, 1, 'one primary action');
     assert.match(markup, /<form[^>]*aria-label="Plan your journey"/, 'Enter submits the search');
@@ -103,17 +103,17 @@ describe('2/3. origin and destination behave differently, on purpose', () => {
     assert.match(markup, /aria-label="Use my current location"/);
   });
 
-  test('the destination leads with "select on map", keeps current location as a quiet last option, and never locates on its own', () => {
+  test('the destination offers "select on map" and no current-location option at all, and never locates on its own', () => {
     const destination = ui.quickActionsFor('destination');
     assert.deepEqual(destination.top, ['select_on_map']);
-    assert.deepEqual(destination.bottom, ['current_location']);
+    assert.deepEqual(destination.bottom, []);
     assert.equal(destination.gpsButtonInField, false);
     assert.equal(destination.locateOnMapOpen, false, 'opening the map for a destination does not request the location');
     const markup = ui.render(ui.LocationInput, { kind: 'destination', label: 'To', placeholder: 'x', value: '', onChange: noop });
-    assert.doesNotMatch(markup, /Use my current location/);
+    assert.doesNotMatch(markup, /current location/i);
     const source = read('components', 'LocationInput.tsx');
-    assert.match(source, /Use my current location as the destination/, 'secondary wording cannot be mistaken for the start');
-    assert.match(source, /\(onCurrentLocation \?\? onCoordinates\)/, 'a destination picked by GPS still reports its coordinates');
+    assert.doesNotMatch(source, /as the destination/, 'the destination current-location option is gone');
+    assert.match(source, /if \(!allowsCurrentLocation\) return;/, 'GPS lookup is refused for a destination');
   });
 });
 
