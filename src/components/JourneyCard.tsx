@@ -31,7 +31,7 @@ const CONFIDENCE: Record<DataConfidence, { text: string; hint: string; className
   live: { text: 'Live', hint: 'Real-time data from the operator.', className: 'bg-emerald-50 border-emerald-300 text-emerald-900' },
   verified: { text: 'Verified', hint: 'Confirmed with the operator.', className: 'bg-emerald-50 border-emerald-300 text-emerald-900' },
   published: { text: 'Published timetable', hint: 'Taken from a published timetable that covers this date.', className: 'bg-emerald-50 border-emerald-300 text-emerald-900' },
-  inferred: { text: 'Inferred schedule', hint: 'The timetable does not cover this date (or some stop times are interpolated), so the weekly pattern is assumed to repeat. Confirm before travelling.', className: 'bg-amber-50 border-amber-300 text-amber-900' },
+  inferred: { text: 'Inferred schedule', hint: 'Not confirmed for this date: the timetable does not cover it, its snapshot may be out of date, or some stop times are interpolated. Confirm before travelling.', className: 'bg-amber-50 border-amber-300 text-amber-900' },
   estimated: { text: 'Estimated', hint: 'Calculated by RouteConnect, not taken from a timetable.', className: 'bg-amber-50 border-amber-300 text-amber-900' },
   unknown: { text: 'Unverified', hint: 'The source of this information is unknown.', className: 'bg-slate-50 border-slate-300 text-slate-700' }
 };
@@ -90,12 +90,17 @@ function walkText(leg: Extract<Leg, { mode: 'walk' }>): string {
 
 function legName(leg: Leg): string {
   if (isWalkLeg(leg)) return 'Walk';
-  if (isLocalRideLeg(leg)) return leg.kind === 'egress' ? 'Local ride to your destination' : 'Local ride to the stop';
+  if (isLocalRideLeg(leg)) return leg.kind === 'egress' ? 'Local ride to your destination' : leg.kind === 'transfer' ? `Local ride to ${leg.to.name}` : isStation(leg.to) ? 'Local ride to the station' : 'Local ride to the stop';
   const number = serviceNumberOf(leg) ?? leg.trainNumber ?? leg.flightNumber ?? null;
   return `${vehicleTitleOf(leg)}${number ? ` ${number}` : ''}`;
 }
 
 const FARE_DISCLAIMER = 'Estimated from route distance and available transit data. Service class is not in the dataset, so the actual fare may vary.';
+const TRAIN_FARE_NOTE = 'Train fares depend on class and quota and are not in the timetable, so no train fare is estimated. Check IRCTC for fares.';
+
+const isTrainLeg = (leg: Leg): leg is TransitLeg => isTransitLeg(leg) && vehicleFamilyOf(leg) === 'train';
+const isStation = (place: { type?: string }) => place.type === 'station';
+const shortDate = (iso: string | null | undefined) => (iso ? formatDateLabel(iso) : null);
 
 function Metric({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
   return (
@@ -150,6 +155,10 @@ export default function JourneyCard({ journey, index, from, to, initialShowDetai
   const partialFare = Boolean(journey.fareEstimate && !journey.fareEstimate.complete);
   const onBoardSeconds = transitLegs.reduce((sum, leg) => sum + leg.durationSeconds, 0);
   const extrapolated = transitLegs.filter(leg => leg.scheduleBasis === 'extrapolated_weekly_pattern');
+  const trainLegs = transitLegs.filter(isTrainLeg);
+  const hasBusLeg = transitLegs.some(leg => vehicleFamilyOf(leg) === 'bus');
+  const trainSnapshot = trainLegs.find(leg => leg.scheduleEvidence?.snapshotDate)?.scheduleEvidence?.snapshotDate ?? null;
+  const trainFromRailRadar = trainLegs.some(leg => leg.source?.id === 'railradar');
 
   const handleSave = () => {
     const entry = {
@@ -159,7 +168,7 @@ export default function JourneyCard({ journey, index, from, to, initialShowDetai
       price: null, // fares are estimated ranges, so no single price is stored
       duration: Math.round(journey.totalDurationSeconds / 60),
       transfers: journey.transfers,
-      modes: hasRide ? ['local_ride', 'bus'] : ['bus']
+      modes: [...(hasRide ? ['local_ride'] : []), ...new Set(transitLegs.map(leg => vehicleFamilyOf(leg)))]
     };
     if (!user) {
       try {
@@ -297,7 +306,7 @@ export default function JourneyCard({ journey, index, from, to, initialShowDetai
               <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-sm">
                 {visibleLegs.filter(leg => !isWalkLeg(leg)).map((leg, i) => {
                   const fare = isWalkLeg(leg) ? null : formatFareRange(leg.fare);
-                  return <Row key={i} label={legName(leg)}>{fare ?? 'Not priced'}</Row>;
+                  return <Row key={i} label={legName(leg)}>{fare ?? (isTrainLeg(leg) ? 'Fare unavailable' : 'Not priced')}</Row>;
                 })}
                 <div className="contents">
                   <dt className="border-t border-[#EEF1EF] pt-1 font-bold text-[#1F2933]">{partialFare ? 'Approx. total (partial)' : 'Approx. total'}</dt>
@@ -307,6 +316,7 @@ export default function JourneyCard({ journey, index, from, to, initialShowDetai
               <p className="text-[11px] text-[#667085]">
                 {partialFare ? 'Some parts could not be priced and are not included. ' : ''}{FARE_DISCLAIMER}
               </p>
+              {trainLegs.length > 0 && <p className="text-[11px] text-[#667085]">{TRAIN_FARE_NOTE}</p>}
             </DetailSection>
           </div>
 
@@ -329,7 +339,14 @@ export default function JourneyCard({ journey, index, from, to, initialShowDetai
               )}
               {hasRide && <li>Local ride times and fares are estimates for a generic auto / cab. No ride provider is connected, so availability is not verified.</li>}
               {walks && <li>Walking is estimated from straight-line distance, not road routing.</li>}
-              <li>Bus times come from a community-maintained dataset that has not been verified by the operator. Confirm with the operator before travelling.</li>
+              {(hasBusLeg || trainLegs.length === 0) && <li>Bus times come from a community-maintained dataset that has not been verified by the operator. Confirm with the operator before travelling.</li>}
+              {trainLegs.length > 0 && (trainFromRailRadar ? (
+                <li>Train times are scheduled timetable times from RailRadar, an independent service (not Indian Railways), for this date. They are not live running status. Confirm on NTES (139) before travelling.</li>
+              ) : (
+                <li>
+                  Train times are scheduled times from an unofficial copy of the Indian Railways timetable{trainSnapshot ? ` taken on ${shortDate(trainSnapshot)}` : ''}. They are not live running status, and trains changed since then may differ. Confirm on NTES (139) before travelling.
+                </li>
+              ))}
             </ul>
             {journey.rating && <PathRating rating={journey.rating} isBest={journey.labels.includes('BEST_PATH')} trust={journeyTrustSummary(journey)} />}
           </DetailSection>
@@ -354,7 +371,7 @@ function LegStep({ leg, step }: { leg: Leg; step: number }) {
   if (isLocalRideLeg(leg)) {
     return (
       <div className={`${base} border-[#F1D29A] bg-[#FFFBF2]`}>
-        <p className="text-sm font-bold text-[#1F2933]"><span aria-hidden>🚕 </span>{step}. {leg.label}{leg.kind === 'egress' ? ' to your destination' : ' to the bus stop'}</p>
+        <p className="text-sm font-bold text-[#1F2933]"><span aria-hidden>🚕 </span>{step}. {leg.label}{leg.kind === 'egress' ? ' to your destination' : leg.kind === 'transfer' ? ` to ${leg.to.name}` : isStation(leg.to) ? ' to the station' : ' to the bus stop'}</p>
         <p className="text-sm text-[#1F2933]">{leg.from.name} → <strong>{leg.to.name}</strong></p>
         <p className="text-xs text-[#667085]">
           ≈ {formatDuration(leg.durationSeconds)} including pickup · about {(leg.distanceMeters / 1000).toFixed(1)} km by road · {clockOf(leg.departureTime)} → {clockOf(leg.arrivalTime)}
@@ -381,6 +398,33 @@ function LegStep({ leg, step }: { leg: Leg; step: number }) {
         {leg.daysOfOperation && leg.daysOfOperation.length > 0 && leg.daysOfOperation.length < 7 && ` · Runs ${leg.daysOfOperation.join(', ')}`}
       </p>
       {overnightNote && <p className="text-[11px] text-[#667085]">{overnightNote}</p>}
+      {isTrainLeg(leg) && leg.scheduleEvidence && <TrainEvidence leg={leg} />}
     </div>
+  );
+}
+
+// The timetable facts behind a train leg, exactly as the source gives them: train number and name, station codes, stop
+// positions, scheduled clock times with the journey day, running days and the snapshot the schedule comes from.
+function TrainEvidence({ leg }: { leg: TransitLeg }) {
+  const e = leg.scheduleEvidence!;
+  const days = leg.daysOfOperation && leg.daysOfOperation.length === 7 ? 'Daily' : leg.daysOfOperation?.join(', ') ?? null;
+  const day = (n: number) => (n > 1 ? ` (day ${n})` : '');
+  return (
+    <dl aria-label="Schedule evidence" className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 rounded-lg bg-white/70 px-3 py-2 text-[11px] text-[#475467]">
+      <dt className="text-[#667085]">Train</dt>
+      <dd className="font-semibold text-[#1F2933]">{e.trainNumber}{e.trainName ? ` ${e.trainName}` : ''}</dd>
+      <dt className="text-[#667085]">Scheduled</dt>
+      <dd className="tabular-nums">{e.fromCode} {e.scheduledDeparture}{day(e.departureRunDay)} → {e.toCode} {e.scheduledArrival}{day(e.arrivalRunDay)}</dd>
+      {e.boardStopNumber !== null && e.alightStopNumber !== null && e.totalStops !== null ? (
+        <><dt className="text-[#667085]">Stops</dt><dd>Stop {e.boardStopNumber} to {e.alightStopNumber} of {e.totalStops}{e.distanceKm ? ` · about ${e.distanceKm} km` : ''}</dd></>
+      ) : (e.haltsBetween !== null && e.haltsBetween !== undefined) || e.distanceKm ? (
+        <><dt className="text-[#667085]">Stops</dt><dd>{e.haltsBetween !== null && e.haltsBetween !== undefined ? `${e.haltsBetween} halt${e.haltsBetween === 1 ? '' : 's'} in between` : ''}{e.haltsBetween !== null && e.haltsBetween !== undefined && e.distanceKm ? ' · ' : ''}{e.distanceKm ? `about ${e.distanceKm} km` : ''}</dd></>
+      ) : null}
+      {days && (<><dt className="text-[#667085]">Runs</dt><dd>{days} from {leg.fromStop.name}</dd></>)}
+      <dt className="text-[#667085]">This run</dt>
+      <dd>Leaves its first station on {formatDateLabel(e.runStartDate)}</dd>
+      <dt className="text-[#667085]">Source</dt>
+      <dd>{leg.source?.name ?? 'Railway timetable'}{e.snapshotDate ? `, snapshot ${formatDateLabel(e.snapshotDate)}` : ''} · scheduled, not live</dd>
+    </dl>
   );
 }

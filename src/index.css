@@ -183,6 +183,16 @@ select {
    off-screen cards and reduced-motion get the static diagram). */
 .rc-sim-runner { transition: background-color 500ms ease, border-color 500ms ease, color 500ms ease; }
 
+/* Estimated rail connections (EstimatedRailSection.tsx): one train chip glides along the dashed rail stretch and the
+   mapped track's dashes drift. Distances only; nothing here represents time. Off under prefers-reduced-motion. */
+@keyframes rc-erc-run { 0% { left: 0%; } 100% { left: calc(100% - 1.75rem); } }
+@keyframes rc-erc-dash { to { stroke-dashoffset: -48; } }
+.rc-erc-runner { left: 0; animation: rc-erc-run 5.5s cubic-bezier(.45, .05, .55, .95) infinite alternate; }
+.rc-erc-runner.rc-erc-still { animation: none; left: calc(50% - .875rem); }
+.rc-erc-dash { animation: rc-erc-dash 2.4s linear infinite; }
+
 @media (prefers-reduced-motion: reduce) {
   .rc-sim-runner, .rc-sim-runner * { transition: none !important; }
+  .rc-erc-runner { animation: none; left: calc(50% - .875rem); }
+  .rc-erc-dash { animation: none; }
 }

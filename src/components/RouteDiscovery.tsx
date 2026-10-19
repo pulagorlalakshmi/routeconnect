@@ -34,6 +34,8 @@ interface RouteDiscoveryProps {
   onRetry?: () => void;
   onEditPreferences?: () => void;
   onChangeSearch?: () => void;
+  // Estimated rail search: the panel says what is being looked for (mapped railway corridors), not ranked journeys.
+  estimatedRail?: boolean;
 }
 
 const ROUTE = 'M36 112 C 96 112, 104 44, 164 50 S 238 112, 286 40';
@@ -43,6 +45,7 @@ const KEY_TIMES = '0;0.78;0.9;1';
 const SPLINES = '0.45 0 0.2 1;0 0 1 1;0 0 1 1';
 
 export const NEUTRAL_STATUS = 'Finding available journeys…';
+export const RAIL_STATUS = 'Finding connected railway corridors…';
 export const SLOW_STATUS = 'Still searching… this can take a few seconds.';
 
 function BusGlyph() {
@@ -133,7 +136,7 @@ export function DiscoveryScene({ busOnly, animate }: { busOnly: boolean; animate
 
 export default function RouteDiscovery({
   from, to, preferences, state, error = null, variant = 'overlay', animate = !prefersReducedMotion(), slowAfterMs = 6000,
-  onCancel, onRetry, onEditPreferences, onChangeSearch
+  onCancel, onRetry, onEditPreferences, onChangeSearch, estimatedRail = false
 }: RouteDiscoveryProps) {
   const headingId = `rc-disc-${useId()}`;
   const [slow, setSlow] = useState(false);
@@ -206,10 +209,10 @@ export default function RouteDiscovery({
               <span className="max-w-[40%] truncate sm:max-w-[45%]">{to}</span>
             </p>
             <p className="mt-2 text-xs font-semibold text-[#667085]">
-              {modeSummary(preferences.modes)} · {rankingLabel(preferences.ranking)}
+              {estimatedRail ? 'Train · estimated railway connections' : `${modeSummary(preferences.modes)} · ${rankingLabel(preferences.ranking)}`}
             </p>
             <p role="status" aria-live="polite" className="mt-4 text-sm text-[#475467]">
-              {state === 'leaving' ? 'Routes ready.' : slow ? SLOW_STATUS : NEUTRAL_STATUS}
+              {state === 'leaving' ? 'Routes ready.' : slow ? SLOW_STATUS : estimatedRail ? RAIL_STATUS : NEUTRAL_STATUS}
             </p>
             {onCancel && state === 'searching' && (
               <button type="button" onClick={onCancel} className="mt-4 rounded-xl px-4 py-2 text-sm font-bold text-[#667085] transition hover:bg-[#F1F4F3] hover:text-[#1F2933] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#146B5B]">

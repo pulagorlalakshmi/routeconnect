@@ -6,8 +6,10 @@ import SearchCard from '../components/SearchCard';
 import PreferenceModal from '../components/PreferenceModal';
 import RouteDiscovery from '../components/RouteDiscovery';
 import type { DiscoveryError } from '../components/RouteDiscovery';
-import { PlanError } from '../services/planService';
+import { PlanError, searchPlaces } from '../services/planService';
+import { fetchRailExplorer } from '../services/railExplorer';
 import { planParamsFromSearch, runPlanSearch } from '../services/planRequest';
+import { useCapabilities } from '../services/capabilities';
 import { prefersReducedMotion } from '../utils/trackingLaunch';
 import RouteBuddyMapBackground from '../components/RouteBuddyMapBackground';
 import { formatDateLabel, nowLocalHHMM, todayLocalIso } from '../utils/dateTime';
@@ -20,8 +22,8 @@ import {
   swapPlaces
 } from '../utils/locationValue';
 import type { Coordinates, PlaceValue } from '../utils/locationValue';
-import { DEFAULT_PREFERENCES, loadPreferences, savePreferences, writePreferenceParams } from '../utils/travelPreferences';
-import type { TravelPreferences } from '../utils/travelPreferences';
+import { DEFAULT_PREFERENCES, loadPreferences, loadView, savePreferences, saveView, writePreferenceParams, writeViewParam } from '../utils/travelPreferences';
+import type { SearchView, TravelPreferences } from '../utils/travelPreferences';
 
 const SAME_PLACE_MESSAGE = 'Your starting point and destination are the same. Choose two different places.';
 
@@ -33,8 +35,13 @@ const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 type SearchPhase =
   | { kind: 'choose' }
-  | { kind: 'searching' | 'leaving'; preferences: TravelPreferences }
-  | { kind: 'error'; preferences: TravelPreferences; error: DiscoveryError };
+  | { kind: 'searching' | 'leaving'; preferences: TravelPreferences; view: SearchView }
+  | { kind: 'error'; preferences: TravelPreferences; view: SearchView; error: DiscoveryError };
+
+// Estimated rail is answered by the railway-network endpoint, which states plainly when it is not ready.
+class RailUnavailableError extends Error {
+  constructor(message: string, readonly retryable: boolean) { super(message); }
+}
 
 // What went wrong, in words, and whether simply trying again can help.
 function describeSearchError(error: unknown): DiscoveryError {
@@ -67,10 +74,13 @@ export default function Dashboard() {
   // against the timetable stops by the server.
   const [places, setPlaces] = useState<{ from: PlaceValue; to: PlaceValue }>({ from: EMPTY_PLACE, to: EMPTY_PLACE });
   const [validationError, setValidationError] = useState('');
+  const [view, setView] = useState<SearchView>(() => loadView());
   const [date, setDate] = useState(() => todayLocalIso());
   const [time, setTime] = useState(() => nowLocalHHMM());
   // A validated search waiting for the preference step ("Any preferences?"); null while the form is in charge.
   const [pending, setPending] = useState<{ params: URLSearchParams; from: string; to: string; when: string; initial: TravelPreferences } | null>(null);
+  // Re-checked every time the dialog opens, and polled while it is open and Train is still preparing.
+  const capabilities = useCapabilities({ poll: pending !== null });
   // After "Show routes" / "Skip": the real search runs while the discovery panel plays in the same overlay.
   const [phase, setPhase] = useState<SearchPhase>({ kind: 'choose' });
   const phaseRef = useRef(phase);
@@ -146,31 +156,59 @@ export default function Dashboard() {
       params.set('toLng', String(places.to.coords.lng));
     }
     // Intent is confirmed: now (and only now) ask about preferences, pre-filled with the last choice.
+    capabilities.refresh();
     setPending({
       params,
       from: params.get('from') ?? from.trim(),
       to: to.trim(),
       when: `${formatDateLabel(date)}, ${time}`,
-      initial: loadPreferences()
+      initial: loadPreferences(undefined, capabilities.availableModes)
     });
   };
 
+  // Estimated rail needs coordinates: a typed place name is resolved through the same place search the form uses.
+  const resolveRailCoords = async (params: URLSearchParams, signal: AbortSignal) => {
+    const end = async (latKey: string, lngKey: string, nameKey: string) => {
+      const lat = Number(params.get(latKey));
+      const lng = Number(params.get(lngKey));
+      if (params.get(latKey) && Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+      const name = params.get(nameKey) ?? '';
+      const [place] = name.trim() ? await searchPlaces(name, signal) : [];
+      if (!place) throw new RailUnavailableError(`We couldn’t locate “${name}”. Choose a suggestion from the list, or a point on the map.`, false);
+      params.set(latKey, String(place.lat));
+      params.set(lngKey, String(place.lon));
+      return { lat: place.lat, lng: place.lon };
+    };
+    const from = await end('fromLat', 'fromLng', 'from');
+    const to = await end('toLat', 'toLng', 'to');
+    return { fromLat: from.lat, fromLng: from.lng, toLat: to.lat, toLng: to.lng };
+  };
+
   // Runs the real search for these preferences. Resolves into navigation (results, empty or not) or an in-place error.
-  const startSearch = (preferences: TravelPreferences, baseParams: URLSearchParams) => {
+  // Estimated rail queries ONLY the railway-network endpoint: no bus search is needed or made.
+  const startSearch = (preferences: TravelPreferences, baseParams: URLSearchParams, searchView: SearchView) => {
     if (searchRef.current) return; // a search is already running
-    const url = writePreferenceParams(preferences, new URLSearchParams(baseParams));
+    const url = searchView === 'estimated_rail'
+      ? writeViewParam(new URLSearchParams(baseParams), 'estimated_rail')
+      : writeViewParam(writePreferenceParams(preferences, new URLSearchParams(baseParams), capabilities.availableModes), 'planned');
     const controller = new AbortController();
     searchRef.current = controller;
     const isCurrent = () => searchRef.current === controller && !controller.signal.aborted;
     const started = performance.now();
-    setPhase({ kind: 'searching', preferences });
+    setPhase({ kind: 'searching', preferences, view: searchView });
 
-    runPlanSearch(planParamsFromSearch(url), controller.signal)
+    const request: Promise<unknown> = searchView === 'estimated_rail'
+      ? resolveRailCoords(url, controller.signal).then(coords => fetchRailExplorer(coords, controller.signal)).then(answer => {
+          if (!answer.available) throw new RailUnavailableError(answer.reason ?? 'Estimated rail connections are not available right now.', answer.state === 'preparing');
+          return answer;
+        })
+      : runPlanSearch(planParamsFromSearch(url), controller.signal);
+    request
       .then(async () => {
         // The response is cached for the results page, which shows it without asking the server again.
         await pause(Math.max(0, MIN_DISCOVERY_MS - (performance.now() - started)));
         if (!isCurrent()) return;
-        setPhase({ kind: 'leaving', preferences });
+        setPhase({ kind: 'leaving', preferences, view: searchView });
         await pause(prefersReducedMotion() ? 0 : DISCOVERY_EXIT_MS);
         if (!isCurrent()) return;
         searchRef.current = null;
@@ -179,13 +217,19 @@ export default function Dashboard() {
       .catch(error => {
         if (!isCurrent()) return; // cancelled, superseded or unmounted
         searchRef.current = null;
-        setPhase({ kind: 'error', preferences, error: describeSearchError(error) });
+        setPhase({ kind: 'error', preferences, view: searchView,
+          error: error instanceof RailUnavailableError
+            ? { title: 'Estimated rail isn’t available', message: error.message, canRetry: error.retryable }
+            : describeSearchError(error)
+        });
       });
   };
 
-  const handleConfirmPreferences = (preferences: TravelPreferences) => {
+  const handleConfirmPreferences = (preferences: TravelPreferences, choice: { view: SearchView }) => {
     if (!pending || phase.kind !== 'choose') return;
-    savePreferences(preferences);
+    savePreferences(preferences, undefined, capabilities.availableModes);
+    saveView(choice.view);
+    setView(choice.view);
     setPending({ ...pending, initial: preferences });
 
     // Remember the search in the browser (My Trips)
@@ -204,7 +248,7 @@ export default function Dashboard() {
       console.error('Failed to save to localStorage:', e);
     }
 
-    startSearch(preferences, pending.params);
+    startSearch(preferences, pending.params, choice.view);
   };
 
   const cancelSearch = useCallback(() => {
@@ -279,16 +323,22 @@ export default function Dashboard() {
         initial={pending?.initial ?? DEFAULT_PREFERENCES}
         trip={pending ? { from: pending.from, to: pending.to, when: pending.when } : undefined}
         onConfirm={handleConfirmPreferences}
+        availableModes={capabilities.availableModes}
+        trainSnapshotDate={capabilities.train.snapshotDate}
+        trainSourceName={capabilities.train.sourceName}
+        estimatedRail={capabilities.estimatedRail}
+        initialView={view}
         onClose={handleClosePreferences}
         stage={pending && phase.kind !== 'choose' ? (
           <RouteDiscovery
             from={pending.from}
             to={pending.to}
             preferences={phase.preferences}
+            estimatedRail={phase.view === 'estimated_rail'}
             state={phase.kind}
             error={phase.kind === 'error' ? phase.error : null}
             onCancel={handleClosePreferences}
-            onRetry={() => startSearch(phase.preferences, pending.params)}
+            onRetry={() => startSearch(phase.preferences, pending.params, phase.view)}
             onEditPreferences={() => setPhase({ kind: 'choose' })}
             onChangeSearch={closeFlow}
           />

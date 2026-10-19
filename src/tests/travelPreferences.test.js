@@ -1,5 +1,5 @@
 // Destination UX fix, place-object swap / same-place validation, and Travel Preferences (asked in a dialog after
-// "Find routes"). Train choices are shown as "Coming soon" and cannot be selected: no verified railway timetable exists.
+// "Find routes"). Three choices: Any transport, Bus, Train (estimated railway suggestions, enabled when the network is ready).
 // Expected values below are written out by hand, not recomputed with the production helpers.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -134,7 +134,7 @@ describe('4. the search form asks only the essentials', () => {
     assert.match(search, /setPending\(\{/);
     assert.doesNotMatch(search, /navigate\(/, 'no navigation before preferences are confirmed');
     const run = source.slice(source.indexOf('const startSearch'), source.indexOf('const handleConfirmPreferences'));
-    assert.match(run, /writePreferenceParams\(preferences, new URLSearchParams\(baseParams\)\)/);
+    assert.match(run, /writePreferenceParams\(preferences, new URLSearchParams\(baseParams\), capabilities\.availableModes\)/);
     assert.match(run, /runPlanSearch\([\s\S]*\.then\([\s\S]*navigate\(`\/search-results\?/, 'navigation only after the real request resolves');
     assert.match(source, /<PreferenceModal[\s\S]{0,200}open=\{pending !== null\}/);
   });
@@ -153,24 +153,23 @@ describe('4. preference dialog', () => {
     assert.match(markup, />Any preferences\?</);
     const text = strip(markup);
     assert.match(text, /Guntur Vijayawada · Tue, 20 Oct 2026, 08:00/);
-    assert.match(text, /Skip, no preference Back Show routes$/);
+    assert.match(text, /Skip — any transport Back Show routes$/);
     assert.match(markup, /aria-label="Back to search"/);
   });
 
-  test('four travel choices; No preference is the default; Train only and Bus + Train are disabled "Coming soon"', () => {
+  test('three travel choices; Any transport is the default; Train is disabled while the railway network is not ready', () => {
     const markup = modal();
-    assert.match(strip(markup), /Travel by No preference .* Bus only .* Train only Coming soon .* Bus \+ Train Coming soon/);
-    const modeInputs = inputsOf(markup).filter(i => /value="(any|bus|train|bus_train)"/.test(i));
-    assert.equal(modeInputs.length, 4);
+    assert.match(strip(markup), /Travel by Any transport .* Bus .* Train Unavailable/);
+    assert.doesNotMatch(strip(markup), /Coming soon|Scheduled train|Estimated rail/);
+    const modeInputs = inputsOf(markup).filter(i => /type="radio"/.test(i) && /value="(any|bus|train)"/.test(i));
+    assert.equal(modeInputs.length, 3);
     const byValue = Object.fromEntries(modeInputs.map(i => [/value="([^"]+)"/.exec(i)[1], i]));
     assert.match(byValue.any, /checked=""/);
     assert.doesNotMatch(byValue.bus, /disabled=""|checked=""/);
-    for (const id of ['train', 'bus_train']) {
-      assert.match(byValue[id], /disabled=""/);
-      assert.doesNotMatch(byValue[id], /checked=""/);
-      assert.match(byValue[id], /aria-describedby="[^"]+-train-note"/);
-    }
-    assert.match(strip(markup), /Train timetables are not connected yet, so we never show train journeys\./);
+    assert.match(byValue.train, /disabled=""/);
+    assert.doesNotMatch(byValue.train, /checked=""/);
+    assert.match(byValue.train, /aria-describedby="[^"]+-train-note"/);
+    assert.match(strip(markup), /Train: Train suggestions are not available right now\. Bus search still works\./);
   });
 
   test('pre-fills the remembered choice', () => {
@@ -202,8 +201,9 @@ describe('4. preference dialog', () => {
 
   test('"Skip" and an unavailable selection both fall back to No preference', () => {
     const source = read('components', 'PreferenceModal.tsx');
-    assert.match(source, /onConfirm\(\{ \.\.\.DEFAULT_PREFERENCES, modes: \[\] \}\)/);
-    assert.match(source, /modes: selectedChoice\.available \? selectedChoice\.modes : \[\]/);
+    assert.match(source, /onConfirm\(\{ \.\.\.DEFAULT_PREFERENCES, modes: \[\] \}, \{ view: 'planned' \}\)/);
+    // An unavailable choice can never be the selection: it falls back to the first choice (No preference).
+    assert.match(source, /choices\.find\(c => c\.id === choiceId && c\.available\) \?\? choices\[0\]/);
   });
 });
 
@@ -241,7 +241,7 @@ describe('5. results page and Data & policies page', () => {
   });
 
   test('notes about this particular search stay on the results page as one-line notices', () => {
-    assert.match(results(), /SEARCH_SPECIFIC_INFO = new Set\(\['ORIGIN_DESTINATION_WALKABLE', 'SEARCH_WINDOW_EXPANDED', 'LOCAL_RIDE_HEAVY'\]\)/);
+    assert.match(results(), /SEARCH_SPECIFIC_INFO = new Set\(\['ORIGIN_DESTINATION_WALKABLE', 'SEARCH_WINDOW_EXPANDED', 'LOCAL_RIDE_HEAVY', 'RAIL_SCHEDULED_ONLY'\]\)/);
   });
 
   test('routes: /about-data renders the page, /policies redirects to it, and the navbar links to it', () => {
@@ -254,11 +254,11 @@ describe('5. results page and Data & policies page', () => {
   test('the page covers every required topic as its own titled section', () => {
     assert.deepEqual(ui.DATA_POLICY_SECTIONS.map(s => s.title), [
       'About the route data', 'Timetable accuracy', 'Data sources', 'Fare estimates', 'Local ride estimates',
-      'Live tracking', 'Train availability', 'Privacy & external links', 'Our promise'
+      'Live tracking', 'Train availability', 'Train suggestions (estimated)', 'Privacy & external links', 'Our promise'
     ]);
     const markup = ui.renderRouted(ui.AboutData, {});
     assert.equal((markup.match(/<h1/g) || []).length, 1);
-    assert.equal((markup.match(/<h2 id="/g) || []).length, 9);
+    assert.equal((markup.match(/<h2 id="/g) || []).length, 10);
     for (const section of ui.DATA_POLICY_SECTIONS) assert.ok(markup.includes(`href="#${section.id}"`), section.id);
   });
 
@@ -304,9 +304,9 @@ describe('4. preferences: normalising, storage and URL', () => {
   });
 
   test('summaries distinguish no preference from Bus only', () => {
-    assert.equal(prefs.modeSummary([]), 'No preference');
+    assert.equal(prefs.modeSummary([]), 'Any transport');
     assert.equal(prefs.modeSummary(['bus']), 'Bus only');
-    assert.equal(prefs.preferencesSummary({ modes: [], ranking: 'cost' }), 'No preference · Lowest estimated cost');
+    assert.equal(prefs.preferencesSummary({ modes: [], ranking: 'cost' }), 'Any transport · Lowest estimated cost');
     assert.deepEqual(prefs.MODE_CHOICES.map(c => [c.id, c.available]), [['any', true], ['bus', true], ['train', false], ['bus_train', false]]);
     assert.equal(prefs.modeChoiceOf(['bus']).id, 'bus');
     assert.equal(prefs.modeChoiceOf([]).id, 'any');
@@ -379,7 +379,7 @@ describe('24/25. responsive and accessible', () => {
     assert.match(source, /rounded-t-3xl[^"]*sm:rounded-3xl/);
     assert.match(source, /max-h-\[calc\(100dvh-1rem\)\] overflow-y-auto/);
     assert.match(source, /sticky bottom-0 grid grid-cols-2 gap-2[^"]*sm:flex/, 'actions: Show routes full width, Back + Skip side by side');
-    assert.match(source, /grid grid-cols-1 gap-2 sm:grid-cols-2/);
+    assert.match(source, /grid grid-cols-1 gap-2 sm:grid-cols-3/);
     assert.doesNotMatch(source, /\bw-\[\d+px\]|min-w-\[\d+px\]/);
   });
 

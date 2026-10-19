@@ -22,6 +22,13 @@ import { handlePlaceSearch } from './transit/routing/placeSearch.js';
 import { getTransitConfig } from './transit/config.js';
 import { ensureTransitData } from './transit/ensureData.js';
 import { stripTrainRoutes, requestsTrainOnly, TRAIN_DATA_UNAVAILABLE } from './services/trainDataPolicy.js';
+import { getRailConfig } from './transit/rail/railConfig.js';
+import { ensureRailData } from './transit/rail/railData.js';
+import { getRailNetwork } from './transit/rail/railNetwork.js';
+import { getRailStatus, getCapabilities } from './transit/rail/railStatus.js';
+import { getSharedRailRadarClient } from './transit/rail/verification/railRadar.js';
+import { handleRailExplorerRequest, railNetworkStatus } from './transit/railNetwork/railExplorer.js';
+import { ensureRailNetwork, railNetworkPreparation } from './transit/railNetwork/railNetworkData.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -355,17 +362,42 @@ async function waitForTransitReady() {
 app.get('/api/transit/status', async (req, res) => {
   await waitForTransitReady();
   try {
-    return res.status(200).json(getTransitStatus());
+    return res.status(200).json({ ...getTransitStatus(), rail: getRailStatus() });
   } catch (error) {
     console.error('Transit status error:', error.message);
     return res.status(500).json({ error: 'Unable to read transit dataset status' });
   }
 });
 
+// Railway timetable: imported once when enabled and missing, then held in memory. Failure only disables trains.
+let railBootstrapPromise = Promise.resolve();
+function bootstrapRail() {
+  railBootstrapPromise = (async () => {
+    const config = getRailConfig();
+    if (!config.enabled) {
+      console.log('[Rail] Train search is disabled (ROUTECONNECT_RAIL_ENABLED is not "true").');
+      return;
+    }
+    const result = await ensureRailData(config);
+    if (!result.ready) {
+      console.warn(`[Rail] Railway timetable unavailable (${result.reason}${result.error ? `: ${result.error}` : ''}). Train search stays off; run "npm run rail:update".`);
+      return;
+    }
+    try {
+      const network = getRailNetwork({ config });
+      const status = getRailStatus();
+      console.log(`[Rail] ${network?.trains.length ?? 0} trains loaded (${network?.loadTimeMs ?? '?'} ms); snapshot ${status.snapshotDate}, freshness ${status.freshness?.status}; train search ${status.available ? 'available' : `off: ${status.reason}`}`);
+    } catch (error) {
+      console.warn('[Rail] Railway timetable could not be loaded:', error.message);
+    }
+  })();
+  return railBootstrapPromise;
+}
+
 // Multimodal planner: GTFS buses via RAPTOR plus any configured rail / flight / private-bus sources, shortlisted for
 // diversity. Independent of the legacy /api/planner above, which is unchanged.
 app.get('/api/v2/plan', async (req, res) => {
-  await waitForTransitReady();
+  await Promise.all([waitForTransitReady(), railBootstrapPromise]);
   try {
     const { status, body } = await handleMultimodalPlanRequest(req.query);
     return res.status(status).json(body);
@@ -373,6 +405,47 @@ app.get('/api/v2/plan', async (req, res) => {
     console.error('Multimodal planning failed:', error);
     return res.status(500).json({ error: 'Journey planning failed.' });
   }
+});
+
+// Which travel modes have genuinely usable data right now. The preference dialog offers Train only when this says so.
+app.get('/api/v2/capabilities', async (req, res) => {
+  await railBootstrapPromise;
+  try {
+    return res.status(200).json(getCapabilities({ railNetwork: () => railNetworkStatus({ preparation: railNetworkPreparation() }) }));
+  } catch (error) {
+    console.error('Capabilities error:', error.message);
+    return res.status(200).json({ modes: { bus: { available: true }, train: { available: false, reason: 'Train availability could not be determined.' } } });
+  }
+});
+
+// Estimated rail connections over mapped railway infrastructure (OpenStreetMap). Deliberately a separate endpoint from
+// /api/v2/plan: these are not scheduled trains and are never mixed into, ranked with, or timed like planned journeys.
+app.get('/api/v2/rail-explorer', (req, res) => {
+  try {
+    const { status, body } = handleRailExplorerRequest(req.query, { preparation: railNetworkPreparation() });
+    return res.status(status).json(body);
+  } catch (error) {
+    console.error('Rail explorer failed:', error);
+    return res.status(500).json({ error: 'Estimated rail connections could not be computed.' });
+  }
+});
+
+// Optional cross-check of one scheduled train with RailRadar (backend-only key; 503 when not configured). Rate-limited
+// in-process because the provider's free tier is 100 requests per month.
+const railRadar = getSharedRailRadarClient();
+const verifyHits = [];
+app.get('/api/v2/rail/verify', async (req, res) => {
+  if (!railRadar.configured) return res.status(503).json({ status: 'not_configured', error: 'Train verification is not configured.' });
+  const nowMs = Date.now();
+  while (verifyHits.length && nowMs - verifyHits[0] > 3600000) verifyHits.shift();
+  if (verifyHits.length >= 20) return res.status(429).json({ status: 'rate_limited', error: 'Too many verification requests; try again later.' });
+  verifyHits.push(nowMs);
+  const text = name => (typeof req.query[name] === 'string' ? req.query[name].trim().toUpperCase() : '');
+  const result = await railRadar.verify({
+    train: text('train'), from: text('from'), to: text('to'), date: text('date'),
+    departure: text('departure'), arrival: text('arrival')
+  });
+  return res.status(result.status === 'invalid_request' ? 400 : 200).json(result);
 });
 
 // Stop/place autocomplete for the GTFS planner: only places that exist in the timetable are suggested.
@@ -411,4 +484,11 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`RouteConnect server running on port ${PORT}`);
   // Bootstrap or warm the in-memory transit network
   bootstrapTransit();
+  bootstrapRail();
+  // Estimated rail connections: build the network graph if it is missing (from the saved extract, or ONE Overpass
+  // extract when none exists). Runs in the background; until it finishes the capability reports "preparing".
+  ensureRailNetwork().then(result => {
+    if (result.ready) console.log(`[Rail network] Estimated rail connections ready${result.built ? ' (graph built now)' : ''}.`);
+    else console.warn(`[Rail network] Estimated rail connections unavailable (${result.reason}${result.error ? `: ${result.error}` : ''}).`);
+  });
 });

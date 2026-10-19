@@ -1,5 +1,8 @@
-// Rail source: searches a NORMALISED static rail timetable. RouteConnect ships no rail data; this source is
-// "not configured" until a timetable file with a stated, legitimate source is provided:
+// Rail source. RouteConnect ships no rail data. Train search comes from one of two places:
+//
+//   - the imported rail database (backend/transit/rail: provider-independent schema, `npm run rail:import`), served
+//     only when ROUTECONNECT_RAIL_ENABLED=true and the snapshot is recent enough (see railConfig.js); or
+//   - a small NORMALISED JSON timetable file with a stated source, for tests and hand-curated data:
 //
 //   ROUTECONNECT_RAIL_TIMETABLE_PATH=/path/to/rail-timetable.json
 //
@@ -18,6 +21,12 @@ import fs from 'node:fs';
 import { haversineMeters } from '../../routing/geo.js';
 import { isoToDayNumber, weekdayIndex, formatLocalDateTime } from '../../routing/serviceCalendar.js';
 import { operatorIdentity } from '../operators.js';
+import { getRailConfig } from '../../rail/railConfig.js';
+import { getRailNetwork, railFreshness } from '../../rail/railNetwork.js';
+import { searchRail, toTrunk } from '../../rail/railSearch.js';
+import { estimateLocalRide, estimateWalk } from '../../routing/accessEgress.js';
+import { getRoutingConfig } from '../../routing/config.js';
+import { COMPOSE_DEFAULTS } from '../../multimodal/compose.js';
 
 // Same order as weekdayIndex(): 0 = Monday ... 6 = Sunday.
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -118,7 +127,52 @@ export function searchTrains(timetable, { origin, destination, date, windowStart
   return trunks;
 }
 
-export function createRailSource({ env = process.env, readFile = path => fs.readFileSync(path, 'utf8') } = {}) {
+// Trains are offered from this straight-line distance up (Guntur -> Tenali is ~22 km and well served by trains).
+export const MIN_RAIL_TRIP_METERS = 8000;
+
+// Live state of the imported rail database: why train search is or is not available right now.
+export function railAvailability({ env = process.env, getNetwork = getRailNetwork, now = new Date() } = {}) {
+  const config = getRailConfig(env);
+  if (!config.enabled) {
+    return { available: false, code: 'RAIL_DISABLED', reason: 'Train search is switched off: no railway timetable has been approved for use (ROUTECONNECT_RAIL_ENABLED).' };
+  }
+  let network = null;
+  try {
+    network = getNetwork({ config });
+  } catch (error) {
+    return { available: false, code: 'RAIL_DATA_ERROR', reason: `The railway timetable could not be loaded: ${error.message}` };
+  }
+  if (!network) return { available: false, code: 'RAIL_NOT_IMPORTED', reason: 'No railway timetable has been imported yet.' };
+  const freshness = railFreshness(network.dataset, { now, ...config.freshness });
+  if (!freshness.usable) {
+    return {
+      available: false, code: 'RAIL_SNAPSHOT_EXPIRED', network, freshness, config,
+      reason: `The railway timetable snapshot (${freshness.snapshotDate ?? 'undated'}) is older than ${config.freshness.maxSnapshotAgeDays} days, so train search is paused until it is refreshed.`
+    };
+  }
+  return { available: true, network, freshness, config };
+}
+
+// Source description carried by every train leg (shown as schedule evidence; never "official" for a community feed).
+export function railSourceInfo(dataset) {
+  return {
+    id: 'rail',
+    name: dataset.name,
+    type: dataset.sourceType,
+    license: dataset.license,
+    licenseStatus: dataset.licenseStatus,
+    snapshotDate: dataset.snapshotDate,
+    url: dataset.sourceUrl
+  };
+}
+
+/**
+ * Rail source for the multimodal planner.
+ *   1. ROUTECONNECT_RAIL_TIMETABLE_PATH (a normalised JSON timetable, see the top of this file), if set;
+ *   2. otherwise the imported rail database (backend/transit/rail), when ROUTECONNECT_RAIL_ENABLED=true and the
+ *      snapshot is not expired.
+ */
+export function createRailSource({ env = process.env, readFile = path => fs.readFileSync(path, 'utf8'), getNetwork = getRailNetwork, now = () => new Date() } = {}) {
   let cached = null;
   const path = env.ROUTECONNECT_RAIL_TIMETABLE_PATH ?? null;
   const timetable = () => {
@@ -129,15 +183,61 @@ export function createRailSource({ env = process.env, readFile = path => fs.read
     id: 'rail',
     label: 'Rail timetable',
     mode: 'rail',
-    timeoutMs: 3000,
+    timeoutMs: 5000,
     status(ctx) {
-      if (!path) return { configured: false, reason: 'No rail timetable is configured (ROUTECONNECT_RAIL_TIMETABLE_PATH). No legitimate, licensed Indian Railways timetable dataset is bundled.' };
-      if (ctx.crowFliesMeters < 30000) return { configured: true, applicable: false, reason: 'Too short for an intercity train.' };
+      if (path) {
+        if (ctx.crowFliesMeters < MIN_RAIL_TRIP_METERS) return { configured: true, applicable: false, reason: 'Too short for a train journey.' };
+        return { configured: true };
+      }
+      const state = railAvailability({ env, getNetwork, now: now() });
+      if (!state.available) return { configured: false, reason: state.reason, code: state.code };
+      if (ctx.crowFliesMeters < MIN_RAIL_TRIP_METERS) return { configured: true, applicable: false, reason: 'Too short for a train journey.' };
       return { configured: true };
     },
     search(ctx) {
-      const table = timetable();
-      return { trunks: searchTrains(table, ctx), meta: { source: table.source } };
+      if (path) {
+        const table = timetable();
+        return { trunks: searchTrains(table, ctx), meta: { source: table.source } };
+      }
+      const state = railAvailability({ env, getNetwork, now: now() });
+      if (!state.available) return { trunks: [], meta: { unavailable: state.reason } };
+      return searchRailDatabase(state, ctx);
+    }
+  };
+}
+
+function searchRailDatabase({ network, freshness, config }, ctx) {
+  const routing = ctx.config ?? getRoutingConfig();
+  const accessSeconds = meters => (meters <= COMPOSE_DEFAULTS.walkMaxMeters
+    ? estimateWalk(meters, routing).durationSeconds
+    : estimateLocalRide(meters, routing).durationSeconds);
+  const result = searchRail(network, ctx, {
+    radiusMeters: config.search.stationRadiusMeters,
+    minTransferSeconds: config.search.minTransferSeconds,
+    maxTransferWaitSeconds: config.search.maxTransferWaitSeconds,
+    boardBufferSeconds: COMPOSE_DEFAULTS.bufferBeforeSeconds.rail,
+    alightBufferSeconds: COMPOSE_DEFAULTS.bufferAfterSeconds.rail,
+    accessSeconds,
+    maxResults: COMPOSE_DEFAULTS.maxTrunks
+  });
+  const dataset = network.dataset;
+  const source = railSourceInfo(dataset);
+  const operatorInfo = operatorIdentity(dataset.operator, { source: `rail:${dataset.name}`, confidence: dataset.sourceType === 'official' ? 'published' : 'inferred', typeHint: 'rail' });
+  // A community snapshot is "published timetable" data only while it is recent; older snapshots are labelled inferred.
+  const scheduleConfidence = freshness.status === 'fresh' ? 'published' : 'inferred';
+  const searchDay = isoToDayNumber(ctx.date);
+  const trunks = result.journeys.map(journey => journey.legs.map(leg => toTrunk(network, leg, { searchDay, utcOffset: ctx.utcOffset ?? '+05:30', operatorInfo, scheduleConfidence, source })));
+  return {
+    trunks,
+    meta: {
+      source,
+      freshness,
+      dateCovered: (!dataset.validFrom || ctx.date >= dataset.validFrom) && (!dataset.validTo || ctx.date <= dataset.validTo),
+      stations: {
+        origin: result.originStations.map(o => network.stations[o.s].code),
+        destination: result.destinationStations.map(d => network.stations[d.s].code)
+      },
+      stats: result.stats
     }
   };
 }

@@ -6,7 +6,7 @@ import JourneyCard from '../components/JourneyCard';
 import type { SourceReport } from '../services/planService';
 
 // One compact line saying which modes were searched, so a bus-only result is never mistaken for "no trains exist".
-const MODE_NAME: Record<string, string> = { bus: 'Buses', rail: 'Trains', air: 'Flights' };
+const MODE_NAME: Record<string, string> = { bus: 'Buses', rail: 'Scheduled trains', air: 'Flights' };
 function sourceState(source: SourceReport): string {
   if (source.status === 'ok') return source.count > 0 ? `${source.count} found` : 'none found';
   if (source.status === 'not_configured') return 'no data source yet';
@@ -38,12 +38,15 @@ function Notice({ children, title }: { children: ReactNode; title?: string }) {
   );
 }
 import RouteDiscovery from '../components/RouteDiscovery';
+import { EstimatedRailHeading, EstimatedRailList, useRailExplorer } from '../components/EstimatedRailSection';
+import EstimatedRailResults from './EstimatedRailResults';
+import { useCapabilities } from '../services/capabilities';
 import { PlanError } from '../services/planService';
 import { planKey, planParamsFromSearch, recallPlan, runPlanSearch } from '../services/planRequest';
 import type { FailureCode, Journey, PlanResponse } from '../services/planService';
 import { addMinutes, clockOf, dateOf, formatDateLabel, nowLocalHHMM, todayLocalIso } from '../utils/dateTime';
 import { SlidersHorizontal, ArrowUpDown, X, Filter, ChevronLeft, Info, FileText, ArrowRight } from 'lucide-react';
-import { comparableFare, compareJourneysFor, journeyMatchesModes, modeSummary, readPreferenceParams, writePreferenceParams } from '../utils/travelPreferences';
+import { comparableFare, compareJourneysFor, journeyMatchesModes, legTransportMode, modeSummary, readExploreParam, readPreferenceParams, readViewParam, TRANSPORT_MODES, writePreferenceParams } from '../utils/travelPreferences';
 import type { RankingPreference } from '../utils/travelPreferences';
 
 type SortKey = 'recommended' | 'earliest' | 'arrival' | 'fastest' | 'transfers' | 'cost';
@@ -65,7 +68,7 @@ const SORT_LABEL: Record<SortKey, string> = {
 };
 
 // General explanations live on the Data & policies page; only notes about THIS search stay on the results page.
-const SEARCH_SPECIFIC_INFO = new Set(['ORIGIN_DESTINATION_WALKABLE', 'SEARCH_WINDOW_EXPANDED', 'LOCAL_RIDE_HEAVY']);
+const SEARCH_SPECIFIC_INFO = new Set(['ORIGIN_DESTINATION_WALKABLE', 'SEARCH_WINDOW_EXPANDED', 'LOCAL_RIDE_HEAVY', 'RAIL_SCHEDULED_ONLY']);
 
 // The preference step's "Show first" choice (URL `rank`) IS the sort for these four keys; choosing one of them here
 // writes it back to the URL, so refresh, back/forward and "later departures" keep it. Earliest departure / arrival are
@@ -104,7 +107,14 @@ const departureSlot = (journey: Journey): 'morning' | 'afternoon' | 'evening' | 
   return 'night';
 };
 
+// The results page shows one of two experiences, never mixed: estimated rail connections only ("Estimated rail"), or
+// timetable journeys with, for "No preference", estimated rail connections in their own section below.
 export default function SearchResults() {
+  const [searchParams] = useSearchParams();
+  return readViewParam(searchParams) === 'estimated_rail' ? <EstimatedRailResults /> : <PlannedResults />;
+}
+
+function PlannedResults() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
 
@@ -116,7 +126,7 @@ export default function SearchResults() {
   const fromLng = finiteOrNull(searchParams.get('fromLng'));
   const toLat = finiteOrNull(searchParams.get('toLat'));
   const toLng = finiteOrNull(searchParams.get('toLng'));
-  const preferences = useMemo(() => readPreferenceParams(searchParams), [searchParams]);
+  const preferences = useMemo(() => readPreferenceParams(searchParams, TRANSPORT_MODES), [searchParams]);
   const modesKey = preferences.modes.join(',');
   // The latest URL, read when a request starts (changing only the sort must not trigger a new request).
   const searchParamsRef = useRef(searchParams);
@@ -128,6 +138,30 @@ export default function SearchResults() {
   const [error, setError] = useState<PlanError | Error | null>(null);
   const [retryCount, setRetryCount] = useState(0);
   const [plan, setPlan] = useState<PlanResponse | null>(initialPlan);
+  const capabilities = useCapabilities();
+  // Estimated train suggestions are a FALLBACK: shown for Any transport / Train only while scheduled trains are not
+  // working (no provider, or the provider failed for this search). "Bus" never shows them.
+  const railSourceReport = plan?.sources?.find(source => source.id === 'rail') ?? null;
+  const scheduledTrainsOk = capabilities.train.available && railSourceReport?.status === 'ok';
+  const scheduledPending = capabilities.train.available && (loading || !plan);
+  const trainOrAny = preferences.modes.length === 0 || (preferences.modes.length === 1 && preferences.modes[0] === 'train');
+  const exploreRail = readExploreParam(searchParams) || (trainOrAny && capabilities.estimatedRail.available && !scheduledTrainsOk && !scheduledPending);
+  const scheduledFailed = capabilities.train.available && Boolean(railSourceReport) && !scheduledTrainsOk && railSourceReport?.status !== 'not_applicable';
+  // Estimated train suggestions are fetched on their own (never through the bus planner) and shown as their own cards.
+  const railCoords = fromLat !== null && fromLng !== null && toLat !== null && toLng !== null ? { fromLat, fromLng, toLat, toLng } : null;
+  const railState = useRailExplorer(exploreRail ? railCoords : null);
+  const railCount = railState.data?.connections?.length ?? 0;
+  // All / Bus / Train: a view filter only. Bus journeys are ranked among themselves; train suggestions are never ranked
+  // against them (no shared Fastest / Lowest cost / Best path).
+  const [typeFilter, setTypeFilter] = useState<'all' | 'bus' | 'train'>('all');
+  const isTrainJourney = (journey: Journey) => journey.legs.some(leg => legTransportMode(leg.mode) === 'train');
+  const trainJourneyCount = (plan?.journeys ?? []).filter(journey => journeyMatchesModes(journey, preferences.modes) && isTrainJourney(journey)).length;
+  const busJourneyCount = (plan?.journeys ?? []).filter(journey => journeyMatchesModes(journey, preferences.modes) && !isTrainJourney(journey)).length;
+  const trainOnly = preferences.modes.length === 1 && preferences.modes[0] === 'train';
+  // All / Bus / Train tabs belong to Any transport only (a Train search has nothing to switch to).
+  const showTabs = preferences.modes.length === 0 && (exploreRail || (trainJourneyCount > 0 && busJourneyCount > 0));
+  const showBus = !(typeFilter === 'train' && trainJourneyCount === 0);
+  const showRailGroup = exploreRail && typeFilter !== 'bus';
   const [showFilterPanel, setShowFilterPanel] = useState(false);
   const [showSortDropdown, setShowSortDropdown] = useState(false);
 
@@ -137,7 +171,7 @@ export default function SearchResults() {
     const ranking = RANKING_FOR_SORT[key];
     if (!ranking) { setViewSort(key as 'earliest' | 'arrival'); return; }
     setViewSort(null);
-    setSearchParams(writePreferenceParams({ ...preferences, ranking }, new URLSearchParams(searchParams)), { replace: true });
+    setSearchParams(writePreferenceParams({ ...preferences, ranking }, new URLSearchParams(searchParams), TRANSPORT_MODES), { replace: true });
   };
   const [transfers, setTransfers] = useState({ trans0: true, trans1: true, trans2: true, trans3plus: true });
   const [departureTimes, setDepartureTimes] = useState({ morning: true, afternoon: true, evening: true, night: true });
@@ -213,6 +247,10 @@ export default function SearchResults() {
       return durations.over8;
     });
 
+    // The All / Bus / Train tab only narrows what is shown; it never reorders.
+    if (typeFilter === 'bus') result = result.filter(journey => !journey.legs.some(leg => legTransportMode(leg.mode) === 'train'));
+    if (typeFilter === 'train') result = result.filter(journey => journey.legs.some(leg => legTransportMode(leg.mode) === 'train'));
+
     // Same ordering as the server for the four preferences (compareJourneysFor mirrors its comparator); filters only
     // remove journeys, they never reorder them.
     const byDeparture = (a: Journey, b: Journey) => a.departureTime.localeCompare(b.departureTime) || a.arrivalTime.localeCompare(b.arrivalTime);
@@ -221,7 +259,7 @@ export default function SearchResults() {
     else if (sortBy === 'arrival') result.sort((a, b) => a.arrivalTime.localeCompare(b.arrivalTime) || byDeparture(a, b));
     else result.sort(byDeparture);
     return result;
-  }, [eligibleJourneys, sortBy, transfers, departureTimes, durations]);
+  }, [eligibleJourneys, sortBy, transfers, departureTimes, durations, typeFilter]);
 
   const showAllModes = () => {
     const params = new URLSearchParams(searchParams);
@@ -249,10 +287,29 @@ export default function SearchResults() {
   const searchNotes = (plan?.warnings ?? []).filter(w => w.severity === 'info' && SEARCH_SPECIFIC_INFO.has(w.code));
   const noRouteDetail = noRouteMessage(plan?.diagnostics?.failureCode);
   const hasLocalRide = Boolean(plan?.journeys.some(j => j.localRideCount > 0));
-  // One short schedule line instead of a warning block: inferred schedules are the common case with this dataset.
-  const scheduleNotice = plan?.datasetWarning || plan?.journeys.some(j => j.scheduleConfidence === 'inferred')
+  // One short schedule line instead of a warning block: inferred schedules are the common case with the bus dataset.
+  // It is about BUS times, so it is shown only when a bus is among the results (trains carry their own notice).
+  const busLegsShown = (plan?.journeys ?? []).flatMap(j => j.legs).filter(leg => legTransportMode(leg.mode) === 'bus');
+  const scheduleNotice = busLegsShown.length > 0 && (plan?.datasetWarning || busLegsShown.some(leg => 'dataConfidence' in leg && leg.dataConfidence === 'inferred'))
     ? 'Schedules are estimated from a community timetable. Confirm times before travelling.'
     : null;
+
+  // Clear labels: while scheduled trains are not available, every planned journey is a bus journey.
+  const journeysHeading = (plan?.journeys ?? []).some(j => j.legs.some(leg => legTransportMode(leg.mode) === 'train')) ? 'Journeys' : 'Bus journeys';
+
+  const busResultsShown = showBus && !loading && !error && Boolean(plan && plan.journeys.length > 0);
+  // Estimated train suggestions: their own labelled group, right after the bus journeys (or alone on the Train tab).
+  const railGroup = (
+    <section aria-labelledby="estimated-rail-heading" className="space-y-4 pt-2">
+      {scheduledFailed && (
+        <ul aria-label="Scheduled trains" className="space-y-1.5">
+          <Notice>Scheduled trains are unavailable for this search{railSourceReport?.message ? ` (${railSourceReport.message})` : ''}. Estimated railway connections are shown instead.</Notice>
+        </ul>
+      )}
+      <EstimatedRailHeading />
+      <EstimatedRailList state={railState} />
+    </section>
+  );
 
   const checkbox = 'w-4 h-4 rounded text-[#146B5B] border-[#D9DED9] focus:ring-[#146B5B]';
 
@@ -280,7 +337,7 @@ export default function SearchResults() {
             </p>
           </div>
 
-          {!loading && !error && plan && plan.journeys.length > 0 && (
+          {showBus && !loading && !error && plan && plan.journeys.length > 0 && (
             <div className="flex items-center gap-2.5 self-start md:self-center">
               <button
                 onClick={() => setShowFilterPanel(true)}
@@ -316,14 +373,34 @@ export default function SearchResults() {
           )}
         </div>
 
-        {loading && (
+        {showTabs && (
+          <div role="group" aria-label="Show travel options" className="flex flex-wrap items-center gap-2">
+            {([
+              ['all', 'All'],
+              ['bus', `Bus${plan ? ` · ${busJourneyCount}` : ''}`],
+              ['train', exploreRail ? `Train${railState.loading ? '' : ` · ${railCount}`} (estimated)` : `Train · ${trainJourneyCount}`]
+            ] as const).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                aria-pressed={typeFilter === id}
+                onClick={() => setTypeFilter(id)}
+                className={`rounded-full border px-3.5 py-1.5 text-xs font-extrabold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#146B5B] ${typeFilter === id ? 'border-[#146B5B] bg-[#146B5B] text-white' : 'border-[#D9DED9] bg-white text-[#1F2933] hover:bg-gray-50'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {showBus && loading && (
           <div className="mx-auto w-full max-w-md">
             <RouteDiscovery variant="inline" from={from || 'Your start'} to={to || 'Your destination'} preferences={preferences} state="searching" />
           </div>
         )}
 
         {/* Errors */}
-        {!loading && error && (
+        {showBus && !loading && error && (
           <div className="bg-white border border-[#D9DED9] rounded-xl p-10 text-center">
             <p className="text-xs uppercase tracking-widest font-extrabold text-red-700">
               {error instanceof PlanError && error.code === 'PLACE_NOT_FOUND' ? 'Place not found' : 'Search unavailable'}
@@ -359,8 +436,19 @@ export default function SearchResults() {
           </div>
         )}
 
+        {/* Train only, nothing scheduled: one train-worded line (the estimated fallback below explains an outage itself) */}
+        {trainOnly && !loading && !error && plan && plan.journeys.length === 0 && !scheduledFailed && (
+          <div className="bg-white border border-[#D9DED9] rounded-xl p-8 text-center" role="status">
+            <p className="text-xs uppercase tracking-widest font-extrabold text-[#146B5B]">No scheduled train found</p>
+            <p className="mt-2 text-lg font-black text-[#1F2933]">No scheduled train runs between stations near these places for this date and time.</p>
+            <button type="button" onClick={() => navigate('/dashboard')} className="mt-5 rounded-lg bg-[#146B5B] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#0f5447] transition">
+              Change search
+            </button>
+          </div>
+        )}
+
         {/* No timetable-supported route: nothing is substituted */}
-        {!loading && !error && plan && plan.journeys.length === 0 && (
+        {showBus && !trainOnly && !loading && !error && plan && plan.journeys.length === 0 && (
           <div className="bg-white border border-[#D9DED9] rounded-xl p-10 text-center" role="status">
             <p className="text-xs uppercase tracking-widest font-extrabold text-[#146B5B]">No route found</p>
             <p className="mt-2 text-xl font-black text-[#1F2933]">
@@ -384,10 +472,10 @@ export default function SearchResults() {
         )}
 
         {/* Results */}
-        {!loading && !error && plan && plan.journeys.length > 0 && (
+        {busResultsShown && plan && (
           <div className="space-y-5">
             <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-1 pt-1">
-              <h2 className="text-xl font-black text-[#1F2933]">Travel options ({visibleJourneys.length})</h2>
+              <h2 className="text-xl font-black text-[#1F2933]">{journeysHeading} ({visibleJourneys.length})</h2>
               {plan.sources && plan.sources.length > 0 && <SourcesLine sources={plan.sources} />}
             </div>
 
@@ -437,6 +525,8 @@ export default function SearchResults() {
               </div>
             )}
 
+            {showRailGroup && railGroup}
+
             <div className="flex justify-center">
               <button
                 onClick={showLaterDepartures}
@@ -459,6 +549,9 @@ export default function SearchResults() {
             </p>
           </div>
         )}
+
+        {/* Train suggestions when there is no bus list to sit beside (Train tab, bus search still running, failed or empty). */}
+        {showRailGroup && !busResultsShown && railGroup}
       </main>
 
       {/* Filter drawer */}

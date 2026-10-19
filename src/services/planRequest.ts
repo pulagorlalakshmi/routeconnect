@@ -5,7 +5,7 @@
 import { fetchPlan, PlanError } from './planService';
 import type { PlanParams, PlanResponse } from './planService';
 import { nowLocalHHMM, todayLocalIso } from '../utils/dateTime';
-import { readPreferenceParams } from '../utils/travelPreferences';
+import { readPreferenceParams, TRANSPORT_MODES } from '../utils/travelPreferences';
 
 // Rural services are sparse, so look several hours ahead of the requested time.
 export const WINDOW_MINUTES = 360;
@@ -23,7 +23,7 @@ export function planParamsFromSearch(search: URLSearchParams): PlanParams {
   const fromLng = finiteOrNull(search.get('fromLng'));
   const toLat = finiteOrNull(search.get('toLat'));
   const toLng = finiteOrNull(search.get('toLng'));
-  const preferences = readPreferenceParams(search);
+  const preferences = readPreferenceParams(search, TRANSPORT_MODES);
   return {
     from: search.get('from') || '',
     to: search.get('to') || '',

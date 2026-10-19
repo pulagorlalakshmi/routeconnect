@@ -45,7 +45,8 @@ export interface PlanDiagnostics {
 }
 
 export interface PlaceRef {
-  type: 'stop' | 'origin' | 'destination';
+  type: 'stop' | 'station' | 'origin' | 'destination';
+  code?: string | null;   // railway station code for type 'station'
   stopId?: string;
   name: string;
   lat: number;
@@ -68,7 +69,7 @@ export interface WalkLeg {
 // A GENERIC local ride (auto / cab) to or from a bus stop. Estimated: no provider is connected, availability is unknown.
 export interface LocalRideLeg {
   mode: 'local_ride';
-  kind: 'access' | 'egress';
+  kind: 'access' | 'egress' | 'transfer'; // transfer: between a bus and a train
   label: string;
   from: PlaceRef;
   to: PlaceRef;
@@ -120,6 +121,30 @@ export interface OperatorInfo {
   confidence: 'verified' | 'published' | 'inferred' | 'unknown';
 }
 
+export interface TrainScheduleEvidence {
+  trainNumber: string;
+  trainName: string | null;
+  fromCode: string;
+  toCode: string;
+  boardStopNumber: number | null;   // null when the provider gives no stop positions (RailRadar)
+  alightStopNumber: number | null;
+  totalStops: number | null;
+  haltsBetween?: number | null;
+  trainType?: string | null;
+  provider?: string;                // e.g. 'RailRadar'
+  scheduledDeparture: string;   // "HH:MM" as published
+  scheduledArrival: string;
+  departureRunDay: number;      // 1 = the day the train leaves its first station
+  arrivalRunDay: number;
+  runStartDate: string;         // ISO date this run leaves its first station
+  runStartWeekday: string;
+  originRunningDays: string[] | null;
+  calendarValidFrom: string | null;
+  calendarValidTo: string | null;
+  distanceKm: number | null;
+  snapshotDate: string | null;
+}
+
 export interface TransitLeg {
   mode: string; // "bus"
   routeId: string;
@@ -137,6 +162,9 @@ export interface TransitLeg {
   flightNumber?: string | null;
   daysOfOperation?: string[] | null;
   intermediateStops?: string[] | null;
+  // Train legs only: the timetable facts the leg was built from (see backend rail/railSearch.js toTrunk()).
+  scheduleEvidence?: TrainScheduleEvidence | null;
+  source?: { id: string; name: string; type: string; license?: string | null; licenseStatus?: string; snapshotDate?: string | null; url?: string | null } | null;
   vehicleNumber?: string | null;     // only ever set from a trustworthy source; the GTFS feed has none, so normally null
   vehicleNumberSource?: 'apsrtc' | 'external_tracker' | null;
   vehicleNumberConfidence?: 'live' | 'published' | 'unknown';

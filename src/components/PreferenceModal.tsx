@@ -1,21 +1,24 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowRight, ArrowRightLeft, Bus, Route, Sparkles, TrainFront, Waypoints, Wallet, X, Zap } from 'lucide-react';
 import RouteMotionBackdrop from './RouteMotionBackdrop';
-import { DEFAULT_PREFERENCES, MODE_CHOICES, RANKING_OPTIONS, modeChoiceOf } from '../utils/travelPreferences';
-import type { ModeChoiceId, RankingPreference, TravelPreferences } from '../utils/travelPreferences';
+import { DEFAULT_AVAILABLE_MODES, DEFAULT_PREFERENCES, RANKING_OPTIONS, TRAIN_ESTIMATE_NOTE, travelChoiceOf, travelChoicesFor } from '../utils/travelPreferences';
+import type { EstimatedRailAvailability, RankingPreference, SearchView, TransportMode, TravelChoice, TravelChoiceId, TravelPreferences } from '../utils/travelPreferences';
 
 // The one question asked after "Find routes": how should we choose your routes? Everything is pre-filled (the last
 // choice, or "No preference" + "Best overall"), so a single click on "Show routes" — or "Skip" — is enough.
 //
 // Accessibility: role="dialog" + aria-modal, labelled by its title; focus moves into the dialog and is kept there;
 // Escape and "Back" close it and return focus to the button that opened it; the page behind is made inert and does not
-// scroll. Train choices are shown but disabled until a verified railway timetable is connected.
+// scroll. Three choices: Any transport, Bus, Train. Train (estimated railway suggestions) is enabled only when the server
+// reports the railway network ready; otherwise it is shown disabled with the server's reason (preparing, failed, or the
+// server could not be asked), and Bus keeps working.
 
-const MODE_ICON: Record<ModeChoiceId, ReactNode> = {
+const MODE_ICON: Record<TravelChoiceId, ReactNode> = {
   any: <Route aria-hidden className="h-5 w-5" />,
   bus: <Bus aria-hidden className="h-5 w-5" />,
+  estimated_rail: <TrainFront aria-hidden className="h-5 w-5" />,
   train: <TrainFront aria-hidden className="h-5 w-5" />,
   bus_train: <Waypoints aria-hidden className="h-5 w-5" />
 };
@@ -27,30 +30,42 @@ const RANK_ICON: Record<RankingPreference, ReactNode> = {
   transfers: <ArrowRightLeft aria-hidden className="h-4 w-4" />
 };
 
-const TRAIN_NOTE = 'Train timetables are not connected yet, so we never show train journeys. Coming soon.';
+// The one line shown when Train searches scheduled trains.
+export const trainSourceNote = (sourceName: string | null) =>
+  `Train times are scheduled timetable times${sourceName ? ` from ${sourceName}` : ''}, not live running status.`;
 
 export interface PreferenceModalProps {
   open: boolean;
   initial: TravelPreferences;
   trip?: { from: string; to: string; when?: string };
-  onConfirm: (preferences: TravelPreferences) => void;
+  // `view` says which kind of result was chosen: timetable journeys (planned) or estimated rail connections.
+  onConfirm: (preferences: TravelPreferences, choice: { view: SearchView }) => void;
   onClose: () => void;
   // When set (the search is running, or failed), it replaces the dialog inside the SAME overlay: the blurred page and
   // the route motion stay put, so choosing preferences flows straight into finding routes. Escape still calls onClose.
   stage?: ReactNode;
   stageLabel?: string;
+  // Modes with usable data, from GET /api/v2/capabilities. Defaults to buses only.
+  availableModes?: readonly TransportMode[];
+  trainSnapshotDate?: string | null;
+  trainSourceName?: string | null;
+  // Estimated rail connections (mapped railway network): availability and the reason when it is not available.
+  estimatedRail?: EstimatedRailAvailability;
+  initialView?: SearchView;
 }
 
 // The choice to pre-select: the remembered one when it is available, otherwise "No preference".
-const seedModes = (modes: TravelPreferences['modes']) => {
-  const choice = modeChoiceOf(modes);
-  return choice.available ? choice.modes : [];
+const seedChoice = (modes: TravelPreferences['modes'], view: SearchView, choices: readonly TravelChoice[]): TravelChoiceId => {
+  const choice = travelChoiceOf(modes, view, choices);
+  return choice.available ? choice.id : 'any';
 };
 
 const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
 
-export default function PreferenceModal({ open, initial, trip, onConfirm, onClose, stage, stageLabel = 'Finding routes' }: PreferenceModalProps) {
-  const [modes, setModes] = useState(() => seedModes(initial.modes));
+export default function PreferenceModal({ open, initial, trip, onConfirm, onClose, stage, stageLabel = 'Finding routes', availableModes = DEFAULT_AVAILABLE_MODES, trainSourceName = null, estimatedRail = { available: false }, initialView = 'planned' }: PreferenceModalProps) {
+  const availabilityKey = `${availableModes.join(',')}|${estimatedRail.available}|${estimatedRail.state ?? ''}`;
+  const choices = useMemo(() => travelChoicesFor({ availableModes, estimatedRail }), [availabilityKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [choiceId, setChoiceId] = useState<TravelChoiceId>(() => seedChoice(initial.modes, initialView, choices));
   const [ranking, setRanking] = useState<RankingPreference>(initial.ranking);
   const dialogRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
@@ -64,9 +79,9 @@ export default function PreferenceModal({ open, initial, trip, onConfirm, onClos
   // Re-seed the draft every time the dialog opens.
   useEffect(() => {
     if (!open) return;
-    setModes(seedModes(initial.modes));
+    setChoiceId(seedChoice(initial.modes, initialView, choices));
     setRanking(initial.ranking);
-  }, [open, initial]);
+  }, [open, initial, choices, initialView]);
 
   // Focus, Escape, focus trap, inert background and scroll lock while open.
   useEffect(() => {
@@ -113,8 +128,15 @@ export default function PreferenceModal({ open, initial, trip, onConfirm, onClos
 
   if (!open) return null;
 
-  const selectedChoice = modeChoiceOf(modes);
-  const confirm = () => onConfirm({ modes: selectedChoice.available ? selectedChoice.modes : [], ranking });
+  const selectedChoice = choices.find(c => c.id === choiceId && c.available) ?? choices[0];
+  const confirm = () => onConfirm({ modes: selectedChoice.modes, ranking }, { view: selectedChoice.view });
+  // One line under the choices: what Train suggestions are, or why Train cannot be chosen right now.
+  const scheduledTrains = choices.some(c => c.id === 'train' && c.view === 'planned');
+  const trainNote = scheduledTrains
+    ? trainSourceNote(trainSourceName)
+    : estimatedRail.available
+      ? TRAIN_ESTIMATE_NOTE
+      : `Train: ${estimatedRail.reason ?? 'Train suggestions are not available right now.'} Bus search still works.`;
 
   const content = (
     <div className="rc-pref-overlay fixed inset-0 z-[100] flex items-end justify-center sm:items-center sm:p-6">
@@ -164,8 +186,8 @@ export default function PreferenceModal({ open, initial, trip, onConfirm, onClos
 
           <fieldset className="mt-5">
             <legend className="text-xs font-extrabold uppercase tracking-wider text-[#667085]">Travel by</legend>
-            <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {MODE_CHOICES.map((option, i) => {
+            <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-3">
+              {choices.map((option, i) => {
                 const inputId = `${modeName}-${option.id}`;
                 const checked = option.available && selectedChoice.id === option.id;
                 return (
@@ -188,8 +210,8 @@ export default function PreferenceModal({ open, initial, trip, onConfirm, onClos
                       value={option.id}
                       checked={checked}
                       disabled={!option.available}
-                      aria-describedby={option.available ? undefined : `${modeName}-train-note`}
-                      onChange={() => setModes(option.modes)}
+                      aria-describedby={option.id === 'train' ? `${modeName}-train-note` : undefined}
+                      onChange={() => setChoiceId(option.id)}
                       className="sr-only"
                     />
                     <span className={`mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition ${
@@ -200,8 +222,8 @@ export default function PreferenceModal({ open, initial, trip, onConfirm, onClos
                     <span className="min-w-0">
                       <span className={`flex flex-wrap items-center gap-1.5 text-sm font-extrabold ${option.available ? 'text-[#1F2933]' : 'text-[#98A2B3]'}`}>
                         {option.label}
-                        {!option.available && (
-                          <span className="rounded-md bg-[#F2F4F7] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[#667085]">Coming soon</span>
+                        {!option.available && option.unavailableLabel && (
+                          <span className="rounded-md bg-[#F2F4F7] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[#667085]">{option.unavailableLabel}</span>
                         )}
                       </span>
                       <span className={`mt-0.5 block text-xs leading-snug ${option.available ? 'text-[#667085]' : 'text-[#98A2B3]'}`}>{option.description}</span>
@@ -210,11 +232,11 @@ export default function PreferenceModal({ open, initial, trip, onConfirm, onClos
                 );
               })}
             </div>
-            {MODE_CHOICES.some(option => !option.available) && (
-              <p id={`${modeName}-train-note`} className="mt-2 text-xs text-[#667085]">{TRAIN_NOTE}</p>
-            )}
+            <p id={`${modeName}-train-note`} className="mt-2 text-xs text-[#667085]">{trainNote}</p>
           </fieldset>
 
+          {/* "Show first" orders timetable journeys; estimated rail connections are not ranked, so it is not asked. */}
+          {selectedChoice.view === 'planned' && (
           <fieldset className="mt-5">
             <legend className="text-xs font-extrabold uppercase tracking-wider text-[#667085]">Show first</legend>
             <div className="mt-2.5 grid grid-cols-2 gap-2">
@@ -225,7 +247,7 @@ export default function PreferenceModal({ open, initial, trip, onConfirm, onClos
                   <label
                     key={option.id}
                     htmlFor={inputId}
-                    style={{ ['--i' as string]: i + MODE_CHOICES.length }}
+                    style={{ ['--i' as string]: i + choices.length }}
                     className={`rc-pref-option flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-bold transition focus-within:ring-2 focus-within:ring-[#146B5B]/40 ${
                       checked ? 'border-[#146B5B] bg-[#EEF6F3] text-[#146B5B]' : 'border-[#D9E2DE] bg-white text-[#1F2933] hover:border-[#9DBFB5]'
                     }`}
@@ -246,15 +268,16 @@ export default function PreferenceModal({ open, initial, trip, onConfirm, onClos
               })}
             </div>
           </fieldset>
+          )}
         </div>
 
         <div className="sticky bottom-0 grid grid-cols-2 gap-2 border-t border-[#EEF1EF] bg-white/95 px-5 py-4 backdrop-blur sm:flex sm:items-center sm:px-7">
           <button
             type="button"
-            onClick={() => onConfirm({ ...DEFAULT_PREFERENCES, modes: [] })}
+            onClick={() => onConfirm({ ...DEFAULT_PREFERENCES, modes: [] }, { view: 'planned' })}
             className="order-3 rounded-xl px-3 py-2.5 text-sm font-bold text-[#667085] transition hover:text-[#1F2933] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#146B5B] sm:order-none sm:mr-auto sm:px-2"
           >
-            Skip, no preference
+            Skip — any transport
           </button>
           <button
             type="button"

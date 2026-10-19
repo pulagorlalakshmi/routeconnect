@@ -1,11 +1,12 @@
 // Builds complete door-to-door journeys around TRUNK legs from non-GTFS sources (trains, flights):
 //
 //   origin --[walk | estimated local ride | GTFS bus]--> station/airport --(buffer)--> TRUNK... --(buffer)--> station/airport
-//          --[walk | estimated local ride]--> destination
+//          --[walk | estimated local ride | GTFS bus]--> destination
 //
-// Bounded on purpose: one trunk sequence per journey (a train, or one flight offer with its connections), at most
-// `maxTrunks` sequences per source, and at most one transit-access alternative per trunk. Nothing is added that the
-// sources did not provide: the access/egress legs are the same ESTIMATED walk / local-ride model the bus planner uses.
+// Bounded on purpose: one trunk sequence per journey (a train, two trains with a same-station change, or one flight
+// offer with its connections), at most `maxTrunks` sequences per source, and at most one transit alternative at each
+// end of a trunk. Nothing is added that the sources did not provide: the access/egress legs are the same ESTIMATED walk /
+// local-ride model the bus planner uses, and bus legs come from the bus planner itself.
 import crypto from 'node:crypto';
 import { haversineMeters } from '../routing/geo.js';
 import { estimateWalk, estimateLocalRide } from '../routing/accessEgress.js';
@@ -15,11 +16,12 @@ import { weakestConfidence } from '../confidence.js';
 import { formatLocalDateTime, isoToDayNumber } from '../routing/serviceCalendar.js';
 
 export const COMPOSE_DEFAULTS = Object.freeze({
-  maxTrunks: 6,
+  maxTrunks: 8,
   walkMaxMeters: 1000,
   // Time to be at the station/airport before departure, and to get out after arrival (estimated, shown as waiting).
-  bufferBeforeSeconds: Object.freeze({ rail: 15 * 60, air: 75 * 60 }),
-  bufferAfterSeconds: Object.freeze({ rail: 5 * 60, air: 20 * 60 })
+  // Rail: security check and finding the platform and coach at a large junction; leaving the station after arrival.
+  bufferBeforeSeconds: Object.freeze({ rail: 20 * 60, air: 75 * 60 }),
+  bufferAfterSeconds: Object.freeze({ rail: 10 * 60, air: 20 * 60 })
 });
 
 const SOURCE_TYPE = { rail: 'rail_timetable', air: 'flight_api' };
@@ -68,9 +70,10 @@ function trunkLeg(trunk, index) {
     flightNumber: trunk.flightNumber ?? null,
     displayName: trunk.displayName,
     daysOfOperation: trunk.daysOfOperation ?? null,
+    scheduleEvidence: trunk.evidence ?? null,
     intermediateStops: trunk.intermediateStops ?? null,
     tripId: `${trunk.trainNumber ?? trunk.flightNumber ?? trunk.offerId ?? 'trunk'}@${trunk.departureTime}`,
-    headsign: null,
+    headsign: trunk.headsign ?? null,
     fromStop: trunk.from,
     toStop: trunk.to,
     departureTime: trunk.departureTime,
@@ -107,22 +110,32 @@ export function composeAroundTrunk(trunks, ctx) {
 
   const egress = endLeg('egress', null, last.to, destinationPlace, ctx.config, ctx.fareConfig);
   const egressStart = shiftIso(last.arrivalTime, after, ctx.utcOffset);
-  const egressLeg = { ...egress, departureTime: egressStart, arrivalTime: shiftIso(egressStart, egress.durationSeconds, ctx.utcOffset) };
   const trunkLegs = trunks.map(trunkLeg);
 
-  const variants = [];
+  const accessVariants = [];
   const access = endLeg('access', null, originPlace, first.from, ctx.config, ctx.fareConfig);
   const accessArrive = shiftIso(first.departureTime, -before, ctx.utcOffset);
-  variants.push([{ ...access, departureTime: shiftIso(accessArrive, -access.durationSeconds, ctx.utcOffset), arrivalTime: accessArrive }]);
+  accessVariants.push([{ ...access, departureTime: shiftIso(accessArrive, -access.durationSeconds, ctx.utcOffset), arrivalTime: accessArrive }]);
 
   // Optional: reach the station by timetable bus instead (bus + train). Bounded: at most one alternative, and only when
   // the station is too far to walk.
   if (ctx.transitAccess && access.mode === 'local_ride') {
     const legs = ctx.transitAccess(originPlace, first.from, toMs(accessArrive));
-    if (Array.isArray(legs) && legs.length > 0) variants.push(legs);
+    if (Array.isArray(legs) && legs.length > 0) accessVariants.push(legs);
   }
 
-  return variants.map(accessLegs => buildJourney([...accessLegs, ...trunkLegs, egressLeg], { trunkLegs, ctx }));
+  const egressVariants = [[{ ...egress, departureTime: egressStart, arrivalTime: shiftIso(egressStart, egress.durationSeconds, ctx.utcOffset) }]];
+  // Optional: leave the station by timetable bus (train + bus), on the same terms.
+  if (ctx.transitEgress && egress.mode === 'local_ride') {
+    const legs = ctx.transitEgress(last.to, destinationPlace, toMs(egressStart));
+    if (Array.isArray(legs) && legs.length > 0) egressVariants.push(legs);
+  }
+
+  const journeys = [];
+  for (const accessLegs of accessVariants) {
+    for (const egressLegs of egressVariants) journeys.push(buildJourney([...accessLegs, ...trunkLegs, ...egressLegs], { trunkLegs, ctx }));
+  }
+  return journeys;
 }
 
 function buildJourney(legs, { trunkLegs, ctx }) {

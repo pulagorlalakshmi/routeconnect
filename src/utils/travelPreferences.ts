@@ -5,8 +5,9 @@
 // Walking and estimated local rides are access/egress connections, never a mode here, so a Bus-only journey may still
 // start with a walk or a local ride to the first stop.
 //
-// Train is listed but NOT available: no verified railway timetable provider is connected yet. It cannot be selected,
-// and a stored or linked "train" preference is dropped rather than silently producing an empty search.
+// Availability is decided by the SERVER (GET /api/v2/capabilities, see services/capabilities.ts): Train can be chosen only
+// while the backend has a usable railway timetable. Every function below takes the currently available modes and
+// defaults to buses only, so a stored or linked "train" preference is dropped whenever trains are not available.
 import type { Journey } from '../services/planService';
 
 export type TransportMode = 'bus' | 'train';
@@ -25,11 +26,16 @@ export interface ModeOption {
   unavailableReason?: string;
 }
 
+export const TRANSPORT_MODES: readonly TransportMode[] = ['bus', 'train'];
+// What may be chosen before (or without) the server confirming anything else.
+export const DEFAULT_AVAILABLE_MODES: readonly TransportMode[] = ['bus'];
+
+// Labels for each mode. `available` here is the DEFAULT; the live value comes from modeChoicesFor(availableModes).
 export const MODE_OPTIONS: readonly ModeOption[] = [
   { id: 'bus', label: 'Bus', available: true },
   {
     id: 'train',
-    label: 'Train',
+    label: 'Scheduled train',
     available: false,
     unavailableLabel: 'Coming soon',
     unavailableReason: 'Train search is not available yet: no verified railway timetable is connected.'
@@ -46,26 +52,26 @@ export const RANKING_OPTIONS: readonly { id: RankingPreference; label: string }[
 export const DEFAULT_PREFERENCES: TravelPreferences = Object.freeze({ modes: [], ranking: 'best' }) as TravelPreferences;
 export const PREFERENCES_STORAGE_KEY = 'routeconnect.travelPreferences';
 
-const AVAILABLE_MODES = new Set(MODE_OPTIONS.filter(option => option.available).map(option => option.id));
 const RANKINGS = new Set(RANKING_OPTIONS.map(option => option.id));
+type Available = readonly TransportMode[];
 
-export function normalizePreferences(raw: unknown): TravelPreferences {
+export function normalizePreferences(raw: unknown, available: Available = DEFAULT_AVAILABLE_MODES): TravelPreferences {
   const value = (raw && typeof raw === 'object' ? raw : {}) as { modes?: unknown; ranking?: unknown };
   const modes = Array.isArray(value.modes)
-    ? MODE_OPTIONS.map(option => option.id).filter(id => AVAILABLE_MODES.has(id) && (value.modes as unknown[]).includes(id))
+    ? MODE_OPTIONS.map(option => option.id).filter(id => available.includes(id) && (value.modes as unknown[]).includes(id))
     : [];
   const ranking = RANKINGS.has(value.ranking as RankingPreference) ? (value.ranking as RankingPreference) : 'best';
   return { modes, ranking };
 }
 
-export function toggleMode(preferences: TravelPreferences, mode: TransportMode): TravelPreferences {
-  if (!AVAILABLE_MODES.has(mode)) return preferences;
+export function toggleMode(preferences: TravelPreferences, mode: TransportMode, available: Available = DEFAULT_AVAILABLE_MODES): TravelPreferences {
+  if (!available.includes(mode)) return preferences;
   const modes = preferences.modes.includes(mode) ? preferences.modes.filter(m => m !== mode) : [...preferences.modes, mode];
-  return normalizePreferences({ ...preferences, modes });
+  return normalizePreferences({ ...preferences, modes }, available);
 }
 
 // The four choices offered to people. A choice is available only when every mode in it has genuine data behind it, so
-// "Train only" and "Bus + Train" stay visible but unselectable until a verified railway timetable is connected.
+// "Train only" and "Bus + Train" stay visible but unselectable while the server reports no usable railway timetable.
 export type ModeChoiceId = 'any' | 'bus' | 'train' | 'bus_train';
 export interface ModeChoice {
   id: ModeChoiceId;
@@ -75,23 +81,27 @@ export interface ModeChoice {
   available: boolean;
 }
 
-const choice = (id: ModeChoiceId, label: string, description: string, modes: TransportMode[]): ModeChoice =>
-  ({ id, label, description, modes, available: modes.every(mode => AVAILABLE_MODES.has(mode)) });
-
-export const MODE_CHOICES: readonly ModeChoice[] = [
-  choice('any', 'No preference', 'Every mode we have real timetables for', []),
-  choice('bus', 'Bus only', 'Buses, with a walk or local ride to the stop', ['bus']),
-  choice('train', 'Train only', 'Trains, with a walk or local ride to the station', ['train']),
-  choice('bus_train', 'Bus + Train', 'Separate and combined bus and train journeys', ['bus', 'train'])
+const CHOICES: readonly Omit<ModeChoice, 'available'>[] = [
+  { id: 'any', label: 'No preference', description: 'Every mode we have real timetables for', modes: [] },
+  { id: 'bus', label: 'Bus only', description: 'Buses, with a walk or local ride to the stop', modes: ['bus'] },
+  { id: 'train', label: 'Scheduled train', description: 'Timetabled trains, with a walk or local ride to the station', modes: ['train'] },
+  { id: 'bus_train', label: 'Bus + scheduled train', description: 'Separate and combined bus and timetabled train journeys', modes: ['bus', 'train'] }
 ];
 
-export function modeChoiceOf(modes: TransportMode[]): ModeChoice {
+export function modeChoicesFor(available: Available = DEFAULT_AVAILABLE_MODES): ModeChoice[] {
+  return CHOICES.map(option => ({ ...option, modes: [...option.modes], available: option.modes.every(mode => available.includes(mode)) }));
+}
+
+// The choices with default availability (buses only), for code that has not heard from the server.
+export const MODE_CHOICES: readonly ModeChoice[] = modeChoicesFor();
+
+export function modeChoiceOf(modes: TransportMode[], choices: readonly ModeChoice[] = MODE_CHOICES): ModeChoice {
   const key = [...modes].sort().join('+');
-  return MODE_CHOICES.find(option => [...option.modes].sort().join('+') === key) ?? MODE_CHOICES[0];
+  return choices.find(option => [...option.modes].sort().join('+') === key) ?? choices[0];
 }
 
 export function modeSummary(modes: TransportMode[]): string {
-  if (modes.length === 0) return 'No preference';
+  if (modes.length === 0) return 'Any transport';
   const labels = MODE_OPTIONS.filter(option => modes.includes(option.id)).map(option => option.label);
   return labels.length === 1 ? `${labels[0]} only` : labels.join(' + ');
 }
@@ -113,26 +123,118 @@ const defaultStorage = (): StorageLike | null => {
   }
 };
 
-export function loadPreferences(storage: StorageLike | null = defaultStorage()): TravelPreferences {
+export function loadPreferences(storage: StorageLike | null = defaultStorage(), available: Available = DEFAULT_AVAILABLE_MODES): TravelPreferences {
   try {
     const text = storage?.getItem(PREFERENCES_STORAGE_KEY);
-    return text ? normalizePreferences(JSON.parse(text)) : { ...DEFAULT_PREFERENCES };
+    return text ? normalizePreferences(JSON.parse(text), available) : { ...DEFAULT_PREFERENCES };
   } catch {
     return { ...DEFAULT_PREFERENCES };
   }
 }
 
-export function savePreferences(preferences: TravelPreferences, storage: StorageLike | null = defaultStorage()): void {
+export function savePreferences(preferences: TravelPreferences, storage: StorageLike | null = defaultStorage(), available: Available = DEFAULT_AVAILABLE_MODES): void {
   try {
-    storage?.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(normalizePreferences(preferences)));
+    storage?.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(normalizePreferences(preferences, available)));
   } catch {
     // Storage unavailable (private mode, blocked): preferences still apply to this search through the URL.
   }
 }
 
+// ---- What the preference dialog offers ----
+// Two kinds of result exist and are never mixed:
+//   planned        - timetable journeys from /api/v2/plan (buses; scheduled trains once a licensed timetable exists)
+//   estimated_rail - mapped railway corridors with an ESTIMATED duration (/api/v2/rail-explorer): not train services
+// "No preference" shows planned journeys AND, in its own section, estimated rail connections.
+export type SearchView = 'planned' | 'estimated_rail';
+export type TravelChoiceId = ModeChoiceId | 'estimated_rail';
+export interface TravelChoice {
+  id: TravelChoiceId;
+  label: string;
+  description: string;
+  modes: TransportMode[];
+  view: SearchView;
+  available: boolean;
+  unavailableLabel: string | null;
+}
+export interface EstimatedRailAvailability { available: boolean; state?: string | null; reason?: string | null }
+
+// Train availability as the server reports it. "unknown" = the server could not be asked (unreachable, or an older
+// server without the endpoint): shown as such, never silently as "unavailable".
+export const TRAIN_ESTIMATE_NOTE = 'Train suggestions are estimated from mapped railway connections. Schedules are not verified.';
+
+// The three choices people see. "Train" means SCHEDULED trains whenever the server has a working timetable provider
+// (availableModes includes 'train'); otherwise it falls back to ESTIMATED railway suggestions (mapped track + assumed
+// speeds), enabled only when the railway network is genuinely ready. Never two train choices.
+export function travelChoicesFor({ availableModes = DEFAULT_AVAILABLE_MODES, estimatedRail = { available: false } }: { availableModes?: Available; estimatedRail?: EstimatedRailAvailability } = {}): TravelChoice[] {
+  if (availableModes.includes('train')) {
+    return [
+      { id: 'any', label: 'Any transport', modes: [], view: 'planned', available: true, unavailableLabel: null, description: 'Buses and scheduled trains' },
+      { id: 'bus', label: 'Bus', description: 'Timetabled buses', modes: ['bus'], view: 'planned', available: true, unavailableLabel: null },
+      { id: 'train', label: 'Train', description: 'Scheduled trains', modes: ['train'], view: 'planned', available: true, unavailableLabel: null }
+    ];
+  }
+  const trainLabel = estimatedRail.available ? null
+    : estimatedRail.state === 'preparing' ? 'Preparing…'
+    : estimatedRail.state === 'unknown' ? 'Not checked'
+    : 'Unavailable';
+  return [
+    {
+      id: 'any', label: 'Any transport', modes: [], view: 'planned', available: true, unavailableLabel: null,
+      description: estimatedRail.available ? 'Buses and estimated train suggestions' : 'Every transport with real data'
+    },
+    { id: 'bus', label: 'Bus', description: 'Timetabled buses', modes: ['bus'], view: 'planned', available: true, unavailableLabel: null },
+    { id: 'train', label: 'Train', description: 'Railway connections near you', modes: [], view: 'estimated_rail', available: estimatedRail.available, unavailableLabel: trainLabel }
+  ];
+}
+
+export function travelChoiceOf(modes: TransportMode[], view: SearchView, choices: readonly TravelChoice[]): TravelChoice {
+  // A remembered "Train" carries over whichever kind of train search is currently on offer.
+  if (view === 'estimated_rail') return choices.find(c => c.view === 'estimated_rail') ?? choices.find(c => c.id === 'train') ?? choices[0];
+  if (modes.length === 1 && modes[0] === 'train') return choices.find(c => c.id === 'train') ?? choices[0];
+  const key = [...modes].sort().join('+');
+  return choices.find(c => c.view === 'planned' && [...c.modes].sort().join('+') === key) ?? choices[0];
+}
+
+// URL ?view=estimated-rail: the whole search is estimated rail connections (no timetable planning at all).
+export const VIEW_STORAGE_KEY = 'routeconnect.searchView';
+export const readViewParam = (params: URLSearchParams): SearchView => (params.get('view') === 'estimated-rail' ? 'estimated_rail' : 'planned');
+export function writeViewParam(params: URLSearchParams, view: SearchView): URLSearchParams {
+  if (view === 'estimated_rail') {
+    params.set('view', 'estimated-rail');
+    params.delete('modes');
+    params.delete('explore');
+  } else {
+    params.delete('view');
+  }
+  return params;
+}
+export function loadView(storage: StorageLike | null = defaultStorage()): SearchView {
+  try { return storage?.getItem(VIEW_STORAGE_KEY) === 'estimated_rail' ? 'estimated_rail' : 'planned'; } catch { return 'planned'; }
+}
+export function saveView(view: SearchView, storage: StorageLike | null = defaultStorage()): void {
+  try { storage?.setItem(VIEW_STORAGE_KEY, view); } catch { /* storage unavailable: the URL still carries it */ }
+}
+export const viewSummary = (view: SearchView, modes: TransportMode[]): string => (view === 'estimated_rail' ? 'Train (estimated)' : modes.length === 0 ? 'Any transport' : modeSummary(modes));
+
+// Legacy "Explore estimated rail connections" links (?explore=rail) still add the estimated section below planned
+// journeys. New searches get it automatically with "No preference".
+export const EXPLORE_STORAGE_KEY = 'routeconnect.exploreRail';
+export const readExploreParam = (params: URLSearchParams): boolean => params.get('explore') === 'rail';
+export function writeExploreParam(params: URLSearchParams, explore: boolean): URLSearchParams {
+  if (explore) params.set('explore', 'rail');
+  else params.delete('explore');
+  return params;
+}
+export function loadExplore(storage: StorageLike | null = defaultStorage()): boolean {
+  try { return storage?.getItem(EXPLORE_STORAGE_KEY) === '1'; } catch { return false; }
+}
+export function saveExplore(explore: boolean, storage: StorageLike | null = defaultStorage()): void {
+  try { storage?.setItem(EXPLORE_STORAGE_KEY, explore ? '1' : '0'); } catch { /* storage unavailable: the URL still carries it */ }
+}
+
 // URL form: ?modes=bus&rank=fastest. Defaults are omitted so ordinary searches keep their old URLs.
-export function writePreferenceParams(preferences: TravelPreferences, params: URLSearchParams): URLSearchParams {
-  const normalized = normalizePreferences(preferences);
+export function writePreferenceParams(preferences: TravelPreferences, params: URLSearchParams, available: Available = DEFAULT_AVAILABLE_MODES): URLSearchParams {
+  const normalized = normalizePreferences(preferences, available);
   if (normalized.modes.length > 0) params.set('modes', normalized.modes.join(','));
   else params.delete('modes');
   if (normalized.ranking !== 'best') params.set('rank', normalized.ranking);
@@ -140,11 +242,13 @@ export function writePreferenceParams(preferences: TravelPreferences, params: UR
   return params;
 }
 
-export function readPreferenceParams(params: URLSearchParams): TravelPreferences {
+// The plan request reads the URL with every known mode (TRANSPORT_MODES): the server is the judge, and answers a train
+// request it cannot serve with MODE_UNAVAILABLE instead of silently searching buses.
+export function readPreferenceParams(params: URLSearchParams, available: Available = DEFAULT_AVAILABLE_MODES): TravelPreferences {
   return normalizePreferences({
     modes: (params.get('modes') ?? '').split(',').map(mode => mode.trim()).filter(Boolean),
     ranking: params.get('rank') ?? 'best'
-  });
+  }, available);
 }
 
 // The transport mode a timetable leg belongs to, or null for walking / local rides (access, egress, transfers).

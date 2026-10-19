@@ -70,11 +70,13 @@ describe('results ordering per preference', () => {
 });
 
 describe('preferences reach the request', () => {
-  test('the results URL becomes request params with modes and an explicit rank; train is never sent', () => {
+  test('the results URL becomes request params with modes and an explicit rank; a linked train choice is left to the server', () => {
     const params = request.planParamsFromSearch(new URLSearchParams('from=Guntur&to=Vijayawada&date=2026-10-20&time=08:00&modes=bus&rank=fastest'));
     assert.deepEqual([params.modes, params.rank, params.windowMinutes], [['bus'], 'fastest', 360]);
     assert.equal(request.planParamsFromSearch(new URLSearchParams('from=a&to=b&date=2026-10-20&time=08:00')).rank, 'best');
-    assert.deepEqual(request.planParamsFromSearch(new URLSearchParams('from=a&to=b&date=2026-10-20&time=08:00&modes=train')).modes, []);
+    // Without a usable railway timetable the server answers MODE_UNAVAILABLE; a train request never silently becomes buses.
+    assert.deepEqual(request.planParamsFromSearch(new URLSearchParams('from=a&to=b&date=2026-10-20&time=08:00&modes=train')).modes, ['train']);
+    assert.deepEqual(request.planParamsFromSearch(new URLSearchParams('from=a&to=b&date=2026-10-20&time=08:00&modes=boat,bus')).modes, ['bus']);
   });
 
   test('fetchPlan sends modes and rank to /api/v2/plan', async () => {
@@ -160,9 +162,9 @@ describe('the flow: Show routes / Skip → real search → results', () => {
   test('both Show routes and Skip go through the same confirm → startSearch path', () => {
     const modal = read('components', 'PreferenceModal.tsx');
     assert.match(modal, /onClick=\{confirm\}[\s\S]{0,20}|const confirm = \(\) => onConfirm\(/);
-    assert.match(modal, /onConfirm\(\{ \.\.\.DEFAULT_PREFERENCES, modes: \[\] \}\)/);
+    assert.match(modal, /onConfirm\(\{ \.\.\.DEFAULT_PREFERENCES, modes: \[\] \}, \{ view: 'planned' \}\)/);
     assert.match(dashboard, /onConfirm=\{handleConfirmPreferences\}/);
-    assert.match(dashboard, /startSearch\(preferences, pending\.params\);/);
+    assert.match(dashboard, /startSearch\(preferences, pending\.params, choice\.view\);/);
   });
 
   test('duplicate submissions are ignored and stale results never update the page', () => {
@@ -183,7 +185,7 @@ describe('the flow: Show routes / Skip → real search → results', () => {
     const run = dashboard.slice(dashboard.indexOf('const startSearch'), dashboard.indexOf('const handleConfirmPreferences'));
     assert.ok(run.indexOf('runPlanSearch(') < run.indexOf('navigate('));
     assert.match(run, /\.catch\(error => \{[\s\S]*setPhase\(\{ kind: 'error'/);
-    assert.match(dashboard, /onRetry=\{\(\) => startSearch\(phase\.preferences, pending\.params\)\}/);
+    assert.match(dashboard, /onRetry=\{\(\) => startSearch\(phase\.preferences, pending\.params, phase\.view\)\}/);
     assert.match(dashboard, /onEditPreferences=\{\(\) => setPhase\(\{ kind: 'choose' \}\)\}/);
     assert.match(dashboard, /onChangeSearch=\{closeFlow\}/);
   });
@@ -197,7 +199,7 @@ describe('the flow: Show routes / Skip → real search → results', () => {
 
   test('changing the sort on the results page updates the URL preference (refresh and back keep it)', () => {
     const page = read('pages', 'SearchResults.tsx');
-    assert.match(page, /setSearchParams\(writePreferenceParams\(\{ \.\.\.preferences, ranking \}, new URLSearchParams\(searchParams\)\), \{ replace: true \}\);/);
+    assert.match(page, /setSearchParams\(writePreferenceParams\(\{ \.\.\.preferences, ranking \}, new URLSearchParams\(searchParams\), TRANSPORT_MODES\), \{ replace: true \}\);/);
     assert.match(page, /const params = new URLSearchParams\(searchParams\);\s*params\.set\('date', next\.date\);/, 'later departures copy every parameter, rank and modes included');
   });
 });
@@ -210,7 +212,7 @@ describe('route-discovery panel', () => {
   test('headline, the trip, the chosen preference and one neutral live status line', () => {
     const markup = panel();
     const text = strip(markup);
-    assert.match(text, /Finding your best routes\.\.\. Guntur Vijayawada No preference · Best overall Finding available journeys…/);
+    assert.match(text, /Finding your best routes\.\.\. Guntur Vijayawada Any transport · Best overall Finding available journeys…/);
     assert.match(markup, /role="status" aria-live="polite"/);
     assert.match(markup, /aria-busy="true"/);
   });

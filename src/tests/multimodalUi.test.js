@@ -111,7 +111,8 @@ describe('mode-aware cards', () => {
 
   test('the results page talks about travel options and lists the sources searched', () => {
     const page = readFileSync(path.join(sourceRoot, 'pages', 'SearchResults.tsx'), 'utf8');
-    assert.match(page, /Travel options \(/);
+    assert.match(page, /\{journeysHeading\} \(/);
+    assert.match(page, /'Bus journeys'/);
     assert.doesNotMatch(page, /Bus options|Searching published bus timetables/);
     assert.match(page, /aria-label="Sources searched"/);
     assert.match(page, /no data source yet/);
