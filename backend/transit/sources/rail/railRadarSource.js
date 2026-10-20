@@ -152,11 +152,10 @@ export function createRailRadarSource({ env = process.env, client = createRailRa
     timeoutMs: 9000,
     provider: 'railradar',
     status(ctx) {
-      if (!client.configured) return { configured: false, reason: 'Scheduled train search is not configured (no RailRadar API key on the server).' };
-      const budget = client.budget();
-      if (budget.providerRemaining === 0 || (budget.used >= budget.budget && budget.month === new Date().toISOString().slice(0, 7))) {
-        return { configured: false, code: 'BUDGET_EXHAUSTED', reason: 'The scheduled-train request budget for this month is used up; train schedules are unavailable until it resets.' };
-      }
+      // No usable credential (none configured, rejected, or its allowance used up): scheduled trains are off, and the
+      // planner / UI fall back to buses plus the labelled estimated railway explorer. Nothing is invented.
+      const access = client.availability();
+      if (!access.available) return { configured: false, code: access.code, reason: access.reason };
       let graph = null;
       try { graph = getGraph(); } catch { graph = null; }
       if (!graph) return { configured: false, reason: 'Station locations are not ready yet (railway network still preparing).' };

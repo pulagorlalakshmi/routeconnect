@@ -166,6 +166,6 @@ describe('source', () => {
     await c.trainsBetween('TSA', 'TSB', '2026-10-20');
     const off = getCapabilities({ env: {}, railRadar: source, railNetwork: () => ({ available: true, state: 'ready' }) }).modes.train;
     assert.equal(off.available, false);
-    assert.match(off.reason, /budget/);
+    assert.match(off.reason, /allowance for this month is used up/);
   });
 });
