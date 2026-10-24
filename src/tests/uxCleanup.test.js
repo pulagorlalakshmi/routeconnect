@@ -221,8 +221,8 @@ describe('12. page notices', () => {
   const page = read('pages', 'SearchResults.tsx');
   test('compact one-line notices instead of warning blocks', () => {
     assert.match(page, /aria-label="Notices"/);
-    assert.match(page, /Schedules are estimated from a community timetable\. Confirm times before travelling\./);
-    assert.match(page, /Local ride times and fares are estimates\./);
+    assert.doesNotMatch(page, /Schedules are estimated from a community timetable/);
+    assert.doesNotMatch(page, /Local ride times and fares are estimates\./);
     assert.doesNotMatch(page, /role="alert">\s*⚠|Schedule confidence is shown on every option|Complete door-to-door journeys compared/);
     assert.doesNotMatch(page, /Bus options/);
   });

@@ -6,6 +6,17 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
+    watch: {
+      ignored: [
+        '**/*.db',
+        '**/*.db-journal',
+        '**/*.db-wal',
+        '**/*.db-shm',
+        '**/*.sqlite',
+        '**/*.sqlite3',
+        '**/backend/**',
+      ],
+    },
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:5000',

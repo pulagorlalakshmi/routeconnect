@@ -211,6 +211,14 @@ export interface PathRating {
   comparedWith: number;
 }
 
+export interface DepartureOption {
+  tripId: string;
+  departureTime: string;
+  arrivalTime: string;
+  durationSeconds: number;
+  journey?: Journey;
+}
+
 export interface Journey {
   id: string;
   labels: JourneyLabel[];
@@ -233,6 +241,7 @@ export interface Journey {
   generalizedCostSeconds?: number;
   primaryMode?: 'bus' | 'train' | 'flight' | 'other';
   modes?: string[];
+  departureOptions?: DepartureOption[];
   // Live-tracking summary over the APSRTC bus legs (independent of scheduleConfidence).
   tracking?: { busLegs: number; verifiedLegs: number; notFoundLegs: number; allVerified: boolean };
   legs: Leg[];

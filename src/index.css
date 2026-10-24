@@ -191,8 +191,39 @@ select {
 .rc-erc-runner.rc-erc-still { animation: none; left: calc(50% - .875rem); }
 .rc-erc-dash { animation: rc-erc-dash 2.4s linear infinite; }
 
+/* Horizontal Journey Timeline moving dot */
+@keyframes rc-timeline-dot {
+  0% {
+    left: 0%;
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.65);
+  }
+  4% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  96% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  100% {
+    left: 100%;
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.65);
+  }
+}
+
+.rc-timeline-moving-dot {
+  animation: rc-timeline-dot 4.5s cubic-bezier(0.42, 0, 0.25, 1) infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .rc-sim-runner, .rc-sim-runner * { transition: none !important; }
   .rc-erc-runner { animation: none; left: calc(50% - .875rem); }
   .rc-erc-dash { animation: none; }
+  .rc-timeline-moving-dot {
+    animation: none !important;
+    display: none !important;
+  }
 }
+

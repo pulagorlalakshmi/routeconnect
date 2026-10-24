@@ -76,13 +76,14 @@ function setVehicleMode(runner: HTMLElement, mode: SimMode) {
   });
 }
 
-export default function JourneySimulation({ journey, detailed = false, animate, progress: fixedProgress }: {
+export default function JourneySimulation({ journey, detailed = false, animate, progress: fixedProgress, hidden = false }: {
   journey: Pick<Journey, 'legs'>;
   detailed?: boolean;
   // Test/preview override; normally decided from prefers-reduced-motion and visibility. `false` always gives the static diagram.
   animate?: boolean;
   // Render the moving layout frozen at this loop progress (0..1): used for previews and tests; starts no timers.
   progress?: number;
+  hidden?: boolean;
 }) {
   const sim = useMemo(() => buildSimulation(journey), [journey]);
   const timeline: Timeline = useMemo(() => buildTimeline(sim), [sim]);
@@ -178,6 +179,20 @@ export default function JourneySimulation({ journey, detailed = false, animate, 
   const gradient = lineGradient(sim.segments, positions);
   const vehicleModes = [...new Set(sim.segments.map(segment => segment.mode))];
   const minWidth = sim.segments.length * MIN_SEGMENT_PX + 32;
+
+  if (hidden) {
+    return (
+      <div
+        ref={root}
+        role="group"
+        aria-label={sim.summary}
+        data-motion="off"
+        className="rc-sim rc-sim-static -mx-1 overflow-x-auto overflow-y-hidden px-1"
+      >
+        <div className="relative px-4" style={{ minWidth }} />
+      </div>
+    );
+  }
 
   return (
     <div

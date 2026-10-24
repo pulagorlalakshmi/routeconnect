@@ -323,6 +323,7 @@ export function assembleJourney(network, candidate, ctx) {
       durationSeconds: segment.arrAbs - segment.depAbs,
       distanceMeters: sequenceMeters, // straight-line length along the stop sequence (a lower bound of the road distance)
       intermediateStopCount: Math.max(0, segment.alightPos - segment.boardPos - 1),
+      intermediateStops: pattern.stops.slice(segment.boardPos + 1, segment.alightPos).map(s => network.stopNames[s]),
       datasetId: dataset?.id ?? null,
       dataConfidence: confidence,
       routeTrust: routeTrust(dataset, confidence),

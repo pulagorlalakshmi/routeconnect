@@ -20,6 +20,7 @@ import { assembleJourney, extractRunCandidates } from './journeyBuilder.js';
 import { rankJourneys } from './ranking.js';
 import { haversineMeters } from './geo.js';
 import { resolvePlace } from './placeSearch.js';
+import { attachCandidateDepartures, groupJourneysByRoute } from './routeGrouping.js';
 import { isoToDayNumber, resolveActiveServices, isDayWithinValidity } from './serviceCalendar.js';
 import { effectiveConfidence, getValidity, todayInTimezone } from '../datasetMetadata.js';
 import { SECONDS_PER_DAY } from './types.js';
@@ -416,6 +417,7 @@ export function planJourneys(network, query, { config = getRoutingConfig(), fare
   const rideHeavy = candidates.some(journey => journey._rideHeavy);
   const ranked = rankJourneys(candidates, config.ranking);
   const journeys = ranked.journeys.map(({ _departureSeconds, _arrivalSeconds, _rideHeavy, ...journey }) => journey);
+  attachCandidateDepartures(journeys, [...pool.values()]);
 
   if (journeys.some(journey => journey.timeQuality !== 'exact')) {
     warn('APPROXIMATE_TIMES', 'info', 'Stop times in this dataset are approximate (not exact timepoints); allow some margin.');

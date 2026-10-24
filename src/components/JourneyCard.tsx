@@ -1,7 +1,7 @@
-import { useId, useState } from 'react';
+import { useId, useState, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Bookmark, Check, ChevronDown, ChevronUp } from 'lucide-react';
+import { Bookmark, Check, ChevronDown, ChevronUp, Clock } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { isLocalRideLeg, isTransitLeg, isWalkLeg, TransitLeg } from '../services/planService';
 import type { DataConfidence, Journey, JourneyLabel, Leg } from '../services/planService';
@@ -10,9 +10,12 @@ import { formatFareRange } from '../utils/fare';
 import { operatorBusName, serviceNumberOf, vehicleFamilyOf, vehicleTitleOf } from '../utils/busIdentity';
 import { headerLabels } from '../utils/journeyBadges';
 import { journeyTrustSummary } from '../utils/trackingTrust';
+import type { DepartureOption, GroupedRoute } from '../utils/routeGrouping';
+import { getRouteCorridor, getRouteDistanceMeters, getRouteStopsSummary } from '../utils/routeGrouping';
 import { BusSummaryRow } from './BusIdentity';
 import PathRating from './PathRating';
 import JourneySimulation from './JourneySimulation';
+import JourneyTimeline from './JourneyTimeline';
 import RideProviders from './RideProviders';
 
 // A journey card is summary-first: title, the journey strip, four key numbers, a few short facts, and two actions.
@@ -137,7 +140,25 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-export default function JourneyCard({ journey, index, from, to, initialShowDetails = false }: { journey: Journey; index: number; from: string; to: string; initialShowDetails?: boolean }) {
+export interface JourneyCardProps {
+  journey: Journey;
+  index: number;
+  from: string;
+  to: string;
+  initialShowDetails?: boolean;
+  departures?: DepartureOption[];
+  routeInfo?: GroupedRoute;
+}
+
+export default function JourneyCard({
+  journey,
+  index,
+  from,
+  to,
+  initialShowDetails = false,
+  departures,
+  routeInfo
+}: JourneyCardProps) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -145,14 +166,35 @@ export default function JourneyCard({ journey, index, from, to, initialShowDetai
   const [saved, setSaved] = useState(false);
   const detailsId = `journey-details-${useId()}`;
 
+  const availableDepartures: DepartureOption[] = useMemo(() => {
+    if (departures && departures.length > 0) return departures;
+    if (journey.departureOptions && journey.departureOptions.length > 0) return journey.departureOptions;
+    return [{
+      tripId: journey.id,
+      departureTime: journey.departureTime,
+      arrivalTime: journey.arrivalTime,
+      durationSeconds: journey.totalDurationSeconds,
+      journey
+    }];
+  }, [departures, journey]);
+
+  const [selectedTime, setSelectedTime] = useState<string>(() => journey.departureTime);
+
+  const activeDeparture = useMemo(() => {
+    const found = availableDepartures.find(d => d.departureTime === selectedTime);
+    return found || availableDepartures[0];
+  }, [availableDepartures, selectedTime]);
+
+  const activeJourney = activeDeparture.journey || journey;
+
   // Walks of a few seconds (the origin/destination is essentially at the stop) are noise in the step list.
-  const visibleLegs = journey.legs.filter(leg => !(isWalkLeg(leg) && leg.durationSeconds < 30));
-  const transitLegs = journey.legs.filter(isTransitLeg);
-  const extraDays = dayDifference(journey.departureTime, journey.arrivalTime);
-  const walks = journey.walkingDurationSeconds >= 30;
-  const hasRide = journey.localRideCount > 0;
-  const totalFare = journey.fareEstimate && journey.fareEstimate.min !== null ? formatFareRange(journey.fareEstimate) : null;
-  const partialFare = Boolean(journey.fareEstimate && !journey.fareEstimate.complete);
+  const visibleLegs = activeJourney.legs.filter(leg => !(isWalkLeg(leg) && leg.durationSeconds < 30));
+  const transitLegs = activeJourney.legs.filter(isTransitLeg);
+  const extraDays = dayDifference(activeJourney.departureTime, activeJourney.arrivalTime);
+  const walks = activeJourney.walkingDurationSeconds >= 30;
+  const hasRide = activeJourney.localRideCount > 0;
+  const totalFare = activeJourney.fareEstimate && activeJourney.fareEstimate.min !== null ? formatFareRange(activeJourney.fareEstimate) : null;
+  const partialFare = Boolean(activeJourney.fareEstimate && !activeJourney.fareEstimate.complete);
   const onBoardSeconds = transitLegs.reduce((sum, leg) => sum + leg.durationSeconds, 0);
   const extrapolated = transitLegs.filter(leg => leg.scheduleBasis === 'extrapolated_weekly_pattern');
   const trainLegs = transitLegs.filter(isTrainLeg);
@@ -160,14 +202,19 @@ export default function JourneyCard({ journey, index, from, to, initialShowDetai
   const trainSnapshot = trainLegs.find(leg => leg.scheduleEvidence?.snapshotDate)?.scheduleEvidence?.snapshotDate ?? null;
   const trainFromRailRadar = trainLegs.some(leg => leg.source?.id === 'railradar');
 
+  const corridor = routeInfo ? { from: routeInfo.origin, to: routeInfo.destination } : getRouteCorridor(activeJourney, from, to);
+  const stopsInfo = routeInfo?.stopsSummary || getRouteStopsSummary(activeJourney);
+  const distanceMeters = routeInfo?.totalDistanceMeters || getRouteDistanceMeters(activeJourney);
+  const distanceKm = distanceMeters > 0 ? `${(distanceMeters / 1000).toFixed(1)} km` : null;
+
   const handleSave = () => {
     const entry = {
-      id: journey.id,
+      id: activeJourney.id,
       from,
       to,
       price: null, // fares are estimated ranges, so no single price is stored
-      duration: Math.round(journey.totalDurationSeconds / 60),
-      transfers: journey.transfers,
+      duration: Math.round(activeJourney.totalDurationSeconds / 60),
+      transfers: activeJourney.transfers,
       modes: [...(hasRide ? ['local_ride'] : []), ...new Set(transitLegs.map(leg => vehicleFamilyOf(leg)))]
     };
     if (!user) {
@@ -193,7 +240,7 @@ export default function JourneyCard({ journey, index, from, to, initialShowDetai
     }
   };
 
-  const badges = headerLabels(journey.labels);
+  const badges = headerLabels(activeJourney.labels);
 
   return (
     <article
@@ -202,7 +249,7 @@ export default function JourneyCard({ journey, index, from, to, initialShowDetai
     >
       {/* 1. What this route is */}
       <header className="flex flex-col-reverse gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <h3 className="text-lg md:text-xl font-black leading-snug text-[#1F2933]">{journeyTitle(journey)}</h3>
+        <h3 className="text-lg md:text-xl font-black leading-snug text-[#1F2933]">{journeyTitle(activeJourney)}</h3>
         {badges.length > 0 && (
           <ul aria-label="Highlights" className="flex shrink-0 flex-wrap gap-1.5">
             {badges.map(label => (
@@ -214,30 +261,80 @@ export default function JourneyCard({ journey, index, from, to, initialShowDetai
         )}
       </header>
 
-      {/* 2. How it goes: the journey strip is the centrepiece */}
-      <section aria-label="Route preview" className="mt-4 rounded-xl bg-[#F7FAF9] px-3 sm:px-5 pt-3">
-        <JourneySimulation journey={journey} />
+      {/* Route Corridor & Stops Overview */}
+      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#667085] font-semibold">
+        <span className="text-[#1F2933] font-bold">{corridor.from} → {corridor.to}</span>
+        {distanceKm && <span>· {distanceKm}</span>}
+        {stopsInfo && <span>· {stopsInfo}</span>}
+      </div>
+
+      {/* Horizontal journey timeline with moving dot */}
+      <JourneyTimeline journey={activeJourney} from={from} to={to} corridor={corridor} />
+
+      {/* 2. How it goes: the journey strip / slidescroller is hidden per user preference */}
+      <section aria-label="Route preview" className="hidden" aria-hidden="true">
+        <JourneySimulation journey={activeJourney} animate={false} hidden />
       </section>
+
+      {/* Available departure times inside this route card */}
+      {availableDepartures.length > 1 && (
+        <section aria-label="Available departures" className="mt-4 rounded-xl border border-[#D9E2DE] bg-[#FAFCFB] p-3 sm:p-4 space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-1.5">
+            <span className="text-xs font-black uppercase tracking-wider text-[#146B5B] flex items-center gap-1.5">
+              <Clock className="h-3.5 w-3.5" />
+              Available departures ({availableDepartures.length})
+            </span>
+            <span className="text-[11px] text-[#667085]">
+              Select a departure time
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Available departure times">
+            {availableDepartures.map((option, idx) => {
+              const isSelected = option.departureTime === activeJourney.departureTime;
+              return (
+                <button
+                  key={`${option.tripId || option.departureTime}-${idx}`}
+                  type="button"
+                  role="radio"
+                  aria-checked={isSelected}
+                  onClick={() => setSelectedTime(option.departureTime)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 border ${
+                    isSelected
+                      ? 'bg-[#146B5B] text-white border-[#146B5B] shadow-sm'
+                      : 'bg-white text-[#1F2933] border-[#D9DED9] hover:border-[#146B5B] hover:bg-[#F5FAF8]'
+                  }`}
+                >
+                  <span className="tabular-nums">{clockOf(option.departureTime)}</span>
+                  <span className={`text-[10px] ${isSelected ? 'text-white/80' : 'text-[#667085]'}`}>
+                    (arr {clockOf(option.arrivalTime)})
+                  </span>
+                  {isSelected && <Check className="h-3 w-3 shrink-0 ml-0.5" />}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* 3. The numbers that decide */}
       <dl aria-label="Key facts" className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
-        <Metric label="Total time">{formatDuration(journey.totalDurationSeconds)}</Metric>
+        <Metric label="Total time">{formatDuration(activeJourney.totalDurationSeconds)}</Metric>
         <Metric label="Approx. budget" hint={totalFare ? `${partialFare ? 'Partial estimate: some parts could not be priced. ' : ''}Estimated fare range.` : 'No fare could be estimated for this journey.'}>
           {totalFare ? <>{totalFare}{partialFare && <span aria-label="partial estimate">+</span>}</> : <>—<span className="sr-only"> fare unknown</span></>}
         </Metric>
         <Metric label="Depart → Arrive">
-          {clockOf(journey.departureTime)} → {clockOf(journey.arrivalTime)}
+          {clockOf(activeJourney.departureTime)} → {clockOf(activeJourney.arrivalTime)}
           {extraDays > 0 && <span className="ml-1 text-xs font-bold text-amber-700">+{extraDays}d</span>}
         </Metric>
-        <Metric label="Transfers">{transfersText(journey.transfers)}</Metric>
+        <Metric label="Transfers">{transfersText(activeJourney.transfers)}</Metric>
       </dl>
 
       {/* 4. A few short facts, only when they apply */}
-      {(hasRide || walks || journey.waitingDurationSeconds > 0) && (
+      {(hasRide || walks || activeJourney.waitingDurationSeconds > 0) && (
         <ul aria-label="Journey facts" className="mt-3 flex flex-wrap gap-1.5">
           {hasRide && <FactChip title="A generic auto / cab ride to or from a stop; time and fare are estimates.">Local ride included</FactChip>}
-          {journey.waitingDurationSeconds > 0 && <FactChip title="Time spent waiting at transfer stops.">Waiting {formatDuration(journey.waitingDurationSeconds)}</FactChip>}
-          {walks && <FactChip title="Straight-line walking estimate.">Walk {formatDuration(journey.walkingDurationSeconds)}</FactChip>}
+          {activeJourney.waitingDurationSeconds > 0 && <FactChip title="Time spent waiting at transfer stops.">Waiting {formatDuration(activeJourney.waitingDurationSeconds)}</FactChip>}
+          {walks && <FactChip title="Straight-line walking estimate.">Walk {formatDuration(activeJourney.walkingDurationSeconds)}</FactChip>}
         </ul>
       )}
 
@@ -268,7 +365,7 @@ export default function JourneyCard({ journey, index, from, to, initialShowDetai
           <DetailSection title="Journey breakdown">
             <div className="rounded-xl bg-[#F7FAF9] px-3 sm:px-5 pt-3">
               {/* Static here: the summary strip above is the card's one moving vehicle. */}
-              <JourneySimulation journey={journey} detailed animate={false} />
+              <JourneySimulation journey={activeJourney} detailed animate={false} />
             </div>
             <ol className="space-y-2">
               {visibleLegs.map((leg, i) => {
@@ -292,13 +389,13 @@ export default function JourneyCard({ journey, index, from, to, initialShowDetai
           <div className="grid gap-6 md:grid-cols-2">
             <DetailSection title="Timing">
               <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-                <Row label="Departure">{clockOf(journey.departureTime)} · {formatDateLabel(dateOf(journey.departureTime))}</Row>
-                <Row label="Arrival">{clockOf(journey.arrivalTime)}{extraDays > 0 ? ` · ${formatDateLabel(dateOf(journey.arrivalTime))}` : ''}</Row>
-                <Row label="Total time">{formatDuration(journey.totalDurationSeconds)}</Row>
+                <Row label="Departure">{clockOf(activeJourney.departureTime)} · {formatDateLabel(dateOf(activeJourney.departureTime))}</Row>
+                <Row label="Arrival">{clockOf(activeJourney.arrivalTime)}{extraDays > 0 ? ` · ${formatDateLabel(dateOf(activeJourney.arrivalTime))}` : ''}</Row>
+                <Row label="Total time">{formatDuration(activeJourney.totalDurationSeconds)}</Row>
                 {onBoardSeconds > 0 && <Row label="On board">{formatDuration(onBoardSeconds)}</Row>}
-                {journey.waitingDurationSeconds > 0 && <Row label="Waiting">{formatDuration(journey.waitingDurationSeconds)}</Row>}
-                {walks && <Row label="Walking">≈ {formatDuration(journey.walkingDurationSeconds)}</Row>}
-                {hasRide && <Row label="Local ride">≈ {formatDuration(journey.localRideDurationSeconds)}</Row>}
+                {activeJourney.waitingDurationSeconds > 0 && <Row label="Waiting">{formatDuration(activeJourney.waitingDurationSeconds)}</Row>}
+                {walks && <Row label="Walking">≈ {formatDuration(activeJourney.walkingDurationSeconds)}</Row>}
+                {hasRide && <Row label="Local ride">≈ {formatDuration(activeJourney.localRideDurationSeconds)}</Row>}
               </dl>
             </DetailSection>
 
@@ -330,8 +427,8 @@ export default function JourneyCard({ journey, index, from, to, initialShowDetai
 
           <DetailSection title="Data quality">
             <div className="flex flex-wrap items-center gap-2">
-              <ConfidenceBadge level={journey.scheduleConfidence} />
-              {journey.timeQuality !== 'exact' && <span className="text-xs text-[#667085]">Approx. stop times</span>}
+              <ConfidenceBadge level={activeJourney.scheduleConfidence} />
+              {activeJourney.timeQuality !== 'exact' && <span className="text-xs text-[#667085]">Approx. stop times</span>}
             </div>
             <ul className="list-disc space-y-1 pl-5 text-xs text-[#667085]">
               {extrapolated.length > 0 && (
@@ -348,7 +445,7 @@ export default function JourneyCard({ journey, index, from, to, initialShowDetai
                 </li>
               ))}
             </ul>
-            {journey.rating && <PathRating rating={journey.rating} isBest={journey.labels.includes('BEST_PATH')} trust={journeyTrustSummary(journey)} />}
+            {activeJourney.rating && <PathRating rating={activeJourney.rating} isBest={activeJourney.labels.includes('BEST_PATH')} trust={journeyTrustSummary(activeJourney)} />}
           </DetailSection>
         </div>
       )}

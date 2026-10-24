@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import JourneyCard from '../components/JourneyCard';
+import { groupJourneysByRoute } from '../utils/routeGrouping';
 import type { SourceReport } from '../services/planService';
 
 // One compact line saying which modes were searched, so a bus-only result is never mistaken for "no trains exist".
@@ -76,7 +77,13 @@ const SEARCH_SPECIFIC_INFO = new Set(['ORIGIN_DESTINATION_WALKABLE', 'SEARCH_WIN
 const SORT_FOR_RANKING: Record<RankingPreference, SortKey> = { best: 'recommended', fastest: 'fastest', cost: 'cost', transfers: 'transfers' };
 const RANKING_FOR_SORT: Partial<Record<SortKey, RankingPreference>> = { recommended: 'best', fastest: 'fastest', cost: 'cost', transfers: 'transfers' };
 
-const NOTICE_HIDDEN = new Set(['SEARCH_DATE_OUTSIDE_FEED_VALIDITY', 'FEED_EXPIRED', 'NO_JOURNEY_FOUND']);
+const NOTICE_HIDDEN = new Set([
+  'SEARCH_DATE_OUTSIDE_FEED_VALIDITY',
+  'FEED_EXPIRED',
+  'NO_JOURNEY_FOUND',
+  'RAIL_SNAPSHOT_STALE',
+  'RAIL_SCHEDULED_ONLY'
+]);
 
 // Plain-language reason for an empty result. The backend knows more; users do not need the internals.
 function noRouteMessage(code?: FailureCode): string | null {
@@ -272,6 +279,11 @@ function PlannedResults() {
   const fromLabel = plan?.resolved?.from?.name ?? from;
   const toLabel = plan?.resolved?.to?.name ?? to;
 
+  const groupedJourneys = useMemo(
+    () => groupJourneysByRoute(visibleJourneys, fromLabel, toLabel),
+    [visibleJourneys, fromLabel, toLabel]
+  );
+
   // Move the search to just after the last departure shown, to look further ahead.
   const showLaterDepartures = () => {
     if (!plan || plan.journeys.length === 0) return;
@@ -286,13 +298,6 @@ function PlannedResults() {
   const noticeWarnings = (plan?.warnings ?? []).filter(w => w.severity === 'warning' && !NOTICE_HIDDEN.has(w.code) && !w.code.startsWith('NO_STOPS'));
   const searchNotes = (plan?.warnings ?? []).filter(w => w.severity === 'info' && SEARCH_SPECIFIC_INFO.has(w.code));
   const noRouteDetail = noRouteMessage(plan?.diagnostics?.failureCode);
-  const hasLocalRide = Boolean(plan?.journeys.some(j => j.localRideCount > 0));
-  // One short schedule line instead of a warning block: inferred schedules are the common case with the bus dataset.
-  // It is about BUS times, so it is shown only when a bus is among the results (trains carry their own notice).
-  const busLegsShown = (plan?.journeys ?? []).flatMap(j => j.legs).filter(leg => legTransportMode(leg.mode) === 'bus');
-  const scheduleNotice = busLegsShown.length > 0 && (plan?.datasetWarning || busLegsShown.some(leg => 'dataConfidence' in leg && leg.dataConfidence === 'inferred'))
-    ? 'Schedules are estimated from a community timetable. Confirm times before travelling.'
-    : null;
 
   // Clear labels: while scheduled trains are not available, every planned journey is a bus journey.
   const journeysHeading = (plan?.journeys ?? []).some(j => j.legs.some(leg => legTransportMode(leg.mode) === 'train')) ? 'Journeys' : 'Bus journeys';
@@ -475,20 +480,14 @@ function PlannedResults() {
         {busResultsShown && plan && (
           <div className="space-y-5">
             <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-1 pt-1">
-              <h2 className="text-xl font-black text-[#1F2933]">{journeysHeading} ({visibleJourneys.length})</h2>
+              <h2 className="text-xl font-black text-[#1F2933]">{journeysHeading} ({groupedJourneys.length}{groupedJourneys.length !== visibleJourneys.length ? ` · ${visibleJourneys.length} departure options` : ''})</h2>
               {plan.sources && plan.sources.length > 0 && <SourcesLine sources={plan.sources} />}
             </div>
 
             {/* Page notices: one short line each, calm styling; the full explanations are on the Data & policies page. */}
-            {(scheduleNotice || hasLocalRide || noticeWarnings.length > 0 || unpricedShown || searchNotes.length > 0) && (
+            {(noticeWarnings.length > 0 || unpricedShown || searchNotes.length > 0) && (
               <ul aria-label="Notices" className="space-y-1.5">
                 {unpricedShown && <Notice>Options without a complete fare estimate are listed last, not treated as cheaper.</Notice>}
-                {scheduleNotice && (
-                  <Notice title={plan.datasetWarning ?? undefined}>{scheduleNotice}</Notice>
-                )}
-                {hasLocalRide && (
-                  <Notice title="No ride provider is connected, so availability is not verified.">Local ride times and fares are estimates.</Notice>
-                )}
                 {noticeWarnings.map(w => <Notice key={w.code}>{w.message}</Notice>)}
                 {searchNotes.map(w => <Notice key={w.code}>{w.message}</Notice>)}
               </ul>
@@ -519,8 +518,16 @@ function PlannedResults() {
               </div>
             ) : (
               <div className="space-y-5" aria-label="Journey options">
-                {visibleJourneys.map((journey, i) => (
-                  <JourneyCard key={journey.id} journey={journey} index={i + 1} from={fromLabel} to={toLabel} />
+                {groupedJourneys.map((group, i) => (
+                  <JourneyCard
+                    key={group.id}
+                    journey={group.representativeJourney}
+                    departures={group.departures}
+                    routeInfo={group}
+                    index={i + 1}
+                    from={fromLabel}
+                    to={toLabel}
+                  />
                 ))}
               </div>
             )}

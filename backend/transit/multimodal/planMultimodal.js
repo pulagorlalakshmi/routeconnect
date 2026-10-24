@@ -27,6 +27,7 @@ import { composeAroundTrunk, COMPOSE_DEFAULTS } from './compose.js';
 import { createBusFeeder } from './busFeeder.js';
 import { buildShortlist } from './shortlist.js';
 import { journeyAllowed, parsePreferences, transportModeOf } from './preferences.js';
+import { attachCandidateDepartures, groupJourneysByRoute } from '../routing/routeGrouping.js';
 
 // The bus planner returns more candidates than before so the shortlist has something to diversify.
 export const GTFS_CANDIDATE_POOL = 30;
@@ -156,6 +157,7 @@ export async function handleMultimodalPlanRequest(rawQuery, {
   // 4. Shortlist across everything.
   const candidates = [...(body?.journeys ?? []), ...composed].filter(journey => journeyAllowed(journey, preferences.modes));
   const shortlist = buildShortlist(candidates, { ranking: config.ranking, priority: preferences.rank ?? undefined });
+  attachCandidateDepartures(shortlist.journeys, candidates);
 
   const base = body ?? { query: q, warnings: [], journeys: [] };
   const warnings = [...(base.warnings ?? [])];
@@ -168,6 +170,7 @@ export async function handleMultimodalPlanRequest(rawQuery, {
       warnings,
       message: shortlist.journeys.length === 0 ? (base.message ?? 'No journey was found.') : null,
       journeys: shortlist.journeys,
+      groupedJourneys: groupJourneysByRoute(shortlist.journeys),
       winners: shortlist.winners,
       preferences: { modes: preferences.modes, rank: preferences.rank },
       sources: sourceReport,

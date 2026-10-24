@@ -8,10 +8,8 @@ import Navbar from '../components/Navbar';
 import { DEFAULT_CAPABILITIES, useCapabilities } from '../services/capabilities';
 import type { TrainCapability } from '../services/capabilities';
 
-// "Data & policies": everything RouteConnect wants people to know about where routes, times and fares come from and
-// what is (and is not) known. It replaces the "About this data" accordion that used to sit under the results.
-// Keep every statement true to the code: when behaviour changes, change this page in the same change. Train statements
-// follow the server's live capability (GET /api/v2/capabilities): trains are described as available only when they are.
+// "Data & policies": quick, concise overview of where routes, times and fares come from.
+// Statements remain strictly honest: trains are described as available only when the server has them.
 
 interface Section {
   id: string;
@@ -29,9 +27,9 @@ const TRAINS_UNAVAILABLE: Section = {
   icon: icon(TrainFront),
   summary: 'Train journeys are not available yet, and we never show made-up trains.',
   points: [
-    'We have not found a current Indian Railways timetable that a public website is permitted to reuse, so no railway timetable is connected.',
-    'Until one is, “Train only” and “Bus + Train” are shown as Coming soon and cannot be selected.',
-    'No train number, name, time or fare is ever generated. For trains, check the official Indian Railways enquiry services (NTES or IRCTC).'
+    <><strong>No linked timetable</strong>: We only connect licensed public timetables.</>,
+    <><strong>Coming soon</strong>: “Train only” and “Bus + Train” unlock when verified feeds are ready.</>,
+    <><strong>Official sources</strong>: No train number, name, time or fare is ever generated. For trains, check official NTES (139) or IRCTC.</>
   ]
 };
 
@@ -41,11 +39,9 @@ const trainsAvailable = (train: TrainCapability): Section => ({
   icon: icon(TrainFront),
   summary: 'Train journeys use scheduled timetable times. They are not live and not official.',
   points: [
-    <>Train numbers, names, stops, times and running days come from {train.sourceName ?? 'a railway timetable dataset'}{train.snapshotDate ? <>, a copy of the Indian Railways public timetable taken on <strong>{train.snapshotDate}</strong></> : null}. It is not published or verified by Indian Railways.</>,
-    'Only trains that the timetable says run on your travel date are shown. A train whose timetable entry has expired is left out rather than assumed to continue, so trains changed after the snapshot may be missing.',
-    'There is no live running status, platform, seat availability or booking. Train fares are not in the timetable, so they are shown as unavailable rather than guessed.',
-    'Walking and local rides to and from stations are estimates; a timetable bus is suggested when one reaches the station in time.',
-    'Always confirm on the official Indian Railways enquiry services (NTES, 139 or IRCTC) before travelling.'
+    <><strong>Timetable snapshot</strong>: Times from {train.sourceName ?? 'community rail data'}{train.snapshotDate ? <> ({train.snapshotDate})</> : ''}; not live running status.</>,
+    <><strong>Confirm before travelling</strong>: Always verify departures on official Indian Railways enquiry services (NTES, 139 or IRCTC).</>,
+    <><strong>No fabricated trains</strong>: No train number, name, time or fare is ever generated.</>
   ]
 });
 
@@ -66,10 +62,9 @@ const BASE_SECTIONS: Section[] = [
     icon: icon(Bus),
     summary: 'Bus journeys are planned from a timetable dataset, not from live vehicle positions.',
     points: [
-      'Journeys come from a community-maintained APSRTC timetable (GTFS) dataset, including transfers and services that run past midnight.',
-      'The dataset has not been verified by APSRTC and may be out of date.',
-      'Place suggestions are the stops in that timetable, so every suggestion can actually be routed.',
-      'If no timetable-supported journey exists, we say so instead of guessing.'
+      <><strong>APSRTC GTFS</strong>: Routes, stops, and transfers come from community timetable data.</>,
+      <><strong>Real stops only</strong>: Location suggestions correspond directly to timetable stops.</>,
+      <><strong>No guessing</strong>: If no timetable-supported journey exists, we say so instead of guessing.</>
     ]
   },
   {
@@ -78,10 +73,8 @@ const BASE_SECTIONS: Section[] = [
     icon: icon(Clock3),
     summary: 'Every bus leg carries a schedule confidence level. Confirm times before you travel.',
     points: [
-      <><strong>Published schedule</strong>: times come from a timetable that covers your travel date.</>,
-      <><strong>Schedule inferred</strong>: the dataset has expired, so the last known weekly pattern is assumed to continue. This is the common case today.</>,
-      <><strong>Schedule estimated / unconfirmed</strong>: times are approximate or could not be checked.</>,
-      'Stop times in this dataset are often approximate rather than exact timepoints, so allow some margin.'
+      <><strong>Schedule status</strong>: Published timetable when covered, inferred weekly pattern if older.</>,
+      <><strong>Approximate times</strong>: Stop timings are approximate guidelines; allow buffer margin.</>
     ]
   },
   {
@@ -90,11 +83,9 @@ const BASE_SECTIONS: Section[] = [
     icon: icon(Database),
     summary: 'Each search lists which sources were searched and what each one returned.',
     points: [
-      <><strong>Buses</strong>: the community APSRTC GTFS dataset described above.</>,
-      <><strong>Trains</strong>: no verified railway timetable is connected (see Train availability below).</>,
-      <><strong>Private buses</strong>: no licensed data source. Booking websites are not scraped.</>,
-      <><strong>Flights</strong>: only searched when a flight data provider is configured on the server.</>,
-      'The "Sources searched" line above the results shows this for every search.'
+      <><strong>Buses</strong>: Community APSRTC GTFS timetable dataset.</>,
+      <><strong>Trains</strong>: No verified railway timetable is connected (see Train availability below).</>,
+      <><strong>Private operators &amp; flights</strong>: Only shown when configured providers exist.</>
     ]
   },
   {
@@ -103,10 +94,9 @@ const BASE_SECTIONS: Section[] = [
     icon: icon(IndianRupee),
     summary: 'Fares are approximate ranges, never exact ticket prices.',
     points: [
-      'The timetable has no fares and no bus service class, so each range is estimated from route distance and spans ordinary to deluxe services.',
-      'When part of a journey cannot be priced, the estimate is marked incomplete and that part is never counted as free.',
-      '"Lowest estimated cost" lists journeys without a complete estimate last, never as the cheapest.',
-      'Check the fare with the operator or at the counter before travelling.'
+      <><strong>Distance-based</strong>: Estimated ranges across service classes (ordinary to deluxe).</>,
+      <><strong>Incomplete pricing</strong>: Unpriced legs are clearly marked, never counted as free.</>,
+      <><strong>Confirm at counter</strong>: Verify final ticket price with the operator or conductor.</>
     ]
   },
   {
@@ -115,9 +105,8 @@ const BASE_SECTIONS: Section[] = [
     icon: icon(Car),
     summary: 'A local ride is a generic auto or cab estimate to reach or leave a stop.',
     points: [
-      'No ride provider is connected, so availability is not verified and nothing is booked for you.',
-      'Ride time and fare are approximate. Walking legs are straight-line estimates, not road routes.',
-      'A local ride only connects you to or from a timetable bus. Ride-only journeys and named ride-hailing services are never shown.'
+      <><strong>First / last mile</strong>: Connects you to and from transit stops; not an on-demand taxi app.</>,
+      <><strong>Unverified availability</strong>: Times and fares are estimates; rides are not booked for you.</>
     ]
   },
   {
@@ -126,10 +115,8 @@ const BASE_SECTIONS: Section[] = [
     icon: icon(Radio),
     summary: 'RouteConnect does not track buses itself. It can hand you over to an external tracker.',
     points: [
-      'Tracking links open the tracker’s own website (APSRTC Official, redBus or AbhiBus) in a new tab, after copying the service number for you.',
-      '"Live tracking verified" means the service was once checked by hand and recognised by that tracker. It is not a live position.',
-      '"Live tracking options" means trackers exist for APSRTC buses, but whether they recognise this service has not been checked.',
-      'A bus is never hidden just because no tracker recognises it.'
+      <><strong>One-tap handover</strong>: Copies your bus service number and opens official APSRTC, redBus, or AbhiBus.</>,
+      <><strong>External tracking</strong>: Shows verified tracker links. It is not a live position.</>
     ]
   },
   TRAINS_UNAVAILABLE,
@@ -139,10 +126,8 @@ const BASE_SECTIONS: Section[] = [
     icon: icon(Search),
     summary: 'An optional explorer of railway track, with an estimated travel time. It never shows scheduled trains.',
     points: [
-      <>Railway track and stations come from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer" className="font-bold text-[#146B5B] underline">© OpenStreetMap contributors</a>, available under the Open Database License (ODbL). Coverage today: Andhra Pradesh and Telangana.</>,
-      'Two stations count as connected only when the mapped track physically joins. Connected track does not mean a passenger train runs on it.',
-      'The time is a range from the mapped distance, assumed average speeds and station-stop allowances. There are no departure times, train numbers, running days, fares or seat availability.',
-      'Choose “Train” to see train suggestions only. With “Any transport” they appear as their own clearly labelled cards beside the bus journeys (filter with All / Bus / Train); with “Bus” they are not shown. They are never ranked against timetable journeys, never joined to a bus into a timed itinerary, and the date and time you search do not apply to them.'
+      <><strong>Physical track</strong>: Stations and lines mapped from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer" className="font-bold text-[#146B5B] underline">© OpenStreetMap contributors</a>.</>,
+      <><strong>Estimated travel time</strong>: Calculated from track distance and speed; not scheduled runs or bookable trains.</>
     ]
   },
   {
@@ -151,10 +136,8 @@ const BASE_SECTIONS: Section[] = [
     icon: icon(Lock),
     summary: 'Your location is used only to plan the search you asked for.',
     points: [
-      'If you use your current location, its coordinates are sent to RouteConnect’s server to plan the journey and to look up an address (via OpenStreetMap Nominatim).',
-      'Showing your location or choosing a point on the map loads Google Maps, which receives those coordinates.',
-      'Recent searches, saved routes and your last travel preferences are stored in this browser only.',
-      'External sites (trackers, maps) have their own privacy policies.'
+      <><strong>Search-only</strong>: Coordinates are used solely to locate nearby stops and plan routes.</>,
+      <><strong>Browser storage</strong>: Recent searches and preferences stay on your device only.</>
     ]
   },
   {
@@ -163,9 +146,8 @@ const BASE_SECTIONS: Section[] = [
     icon: icon(ShieldCheck),
     summary: 'Correct over complete: fewer routes we can stand behind, rather than more we cannot.',
     points: [
-      'Scheduled times are never presented as live, and nothing is labelled bookable unless it really is.',
-      'Estimates are always labelled as estimates.',
-      'Found something wrong? Confirm with the operator first, and treat RouteConnect as a planning aid.'
+      <><strong>Honest data</strong>: Scheduled times are never presented as live GPS positions.</>,
+      <><strong>Transparent estimates</strong>: Estimates are always clearly labelled as estimates.</>
     ]
   }
 ];
@@ -191,7 +173,6 @@ export default function AboutData() {
   const { train } = useCapabilities();
   const sections = dataPolicySections(train);
 
-  // Arriving from a long results page: start at the top unless a section was linked directly.
   useEffect(() => {
     if (!window.location.hash) window.scrollTo(0, 0);
   }, []);
@@ -211,11 +192,12 @@ export default function AboutData() {
         <header className="mt-6">
           <p className="text-xs font-extrabold uppercase tracking-[0.2em] text-[#146B5B]">Data &amp; policies</p>
           <h1 className="mt-2 text-3xl font-black tracking-tight sm:text-4xl">What’s behind every route</h1>
-          <p className="mt-3 max-w-2xl text-base leading-7 text-[#667085]">
-            Where our routes, times and fares come from, how sure we are about them, and what we will never pretend to know.
+          <p className="mt-2 max-w-2xl text-sm font-semibold leading-relaxed text-[#667085]">
+            Quick, shortcut guide to where our transit routes, times and fares come from and how they work.
           </p>
         </header>
 
+        {/* Quick summary metrics */}
         <section aria-label="At a glance" className="mt-6 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
           {atAGlance(train).map(item => (
             <div key={item.label} className="rounded-2xl border border-[#D9E2DE] bg-white px-4 py-3">
@@ -225,6 +207,7 @@ export default function AboutData() {
           ))}
         </section>
 
+        {/* Quick-jump navigation pills */}
         <nav aria-label="On this page" className="mt-6 flex flex-wrap gap-2">
           {sections.map(section => (
             <a
@@ -237,23 +220,24 @@ export default function AboutData() {
           ))}
         </nav>
 
+        {/* Concise topic cards */}
         <div className="mt-8 grid gap-4 md:grid-cols-2">
           {sections.map((section, index) => (
             <section
               key={section.id}
               id={section.id}
               aria-labelledby={`${section.id}-title`}
-              className={`scroll-mt-24 rounded-2xl ${index === sections.length - 1 && sections.length % 2 === 1 ? 'md:col-span-2' : ''} border border-[#D9E2DE] bg-white p-5 shadow-sm shadow-[#1F2933]/5 sm:p-6`}
+              className={`scroll-mt-24 rounded-2xl ${index === sections.length - 1 && sections.length % 2 === 1 ? 'md:col-span-2' : ''} border border-[#D9E2DE] bg-white p-5 shadow-sm transition hover:border-[#146B5B]/30 sm:p-6`}
             >
               <div className="flex items-center gap-3">
-                <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#EEF6F3] text-[#146B5B]">{section.icon}</span>
-                <h2 id={`${section.id}-title`} className="text-lg font-black leading-tight">{section.title}</h2>
+                <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#EEF6F3] text-[#146B5B]">{section.icon}</span>
+                <h2 id={`${section.id}-title`} className="text-base font-black leading-tight">{section.title}</h2>
               </div>
-              <p className="mt-3 text-sm font-semibold leading-6 text-[#1F2933]">{section.summary}</p>
-              <ul className="mt-3 space-y-2 text-sm leading-6 text-[#667085]">
+              <p className="mt-2.5 text-xs font-bold leading-5 text-[#146B5B]">{section.summary}</p>
+              <ul className="mt-3 space-y-2 text-xs leading-5 text-[#475467]">
                 {section.points.map((point, i) => (
-                  <li key={i} className="flex gap-2.5">
-                    <span aria-hidden className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[#9DBFB5]" />
+                  <li key={i} className="flex gap-2">
+                    <span aria-hidden className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[#146B5B]" />
                     <span>{point}</span>
                   </li>
                 ))}
@@ -265,12 +249,12 @@ export default function AboutData() {
         <aside className="mt-8 flex flex-col items-start gap-4 rounded-2xl bg-[#146B5B] p-6 text-white sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-lg font-black">Ready to plan a journey?</p>
-            <p className="mt-1 text-sm text-white/80">Every result shows its schedule confidence and estimates clearly.</p>
+            <p className="mt-1 text-xs text-white/80">Every result shows its schedule confidence and estimates clearly.</p>
           </div>
           <button
             type="button"
             onClick={() => navigate('/dashboard')}
-            className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-white px-5 py-3 text-sm font-extrabold text-[#146B5B] transition hover:bg-[#EEF6F3] focus:outline-none focus-visible:ring-4 focus-visible:ring-white/40"
+            className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-white px-5 py-3 text-xs font-black text-[#146B5B] transition hover:bg-[#EEF6F3] focus:outline-none focus-visible:ring-4 focus-visible:ring-white/40"
           >
             <Search aria-hidden className="h-4 w-4" />
             Plan a journey
