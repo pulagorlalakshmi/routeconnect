@@ -46,7 +46,7 @@ const SPLINES = '0.45 0 0.2 1;0 0 1 1;0 0 1 1';
 
 export const NEUTRAL_STATUS = 'Finding available journeys…';
 export const RAIL_STATUS = 'Finding connected railway corridors…';
-export const SLOW_STATUS = 'Still searching… this can take a few seconds.';
+export const SLOW_STATUS = 'Still searching… the server may take a little longer to wake up after inactivity.';
 
 function BusGlyph() {
   return (
@@ -168,9 +168,8 @@ export default function RouteDiscovery({
       aria-labelledby={headingId}
       aria-busy={state === 'searching'}
       data-state={state}
-      className={`${state === 'leaving' ? 'rc-disc-exit' : 'rc-disc-enter'} w-full overflow-hidden rounded-3xl bg-white outline-none ${
-        variant === 'overlay' ? 'shadow-2xl shadow-black/30' : 'border border-[#D9E2DE] shadow-sm'
-      }`}
+      className={`${state === 'leaving' ? 'rc-disc-exit' : 'rc-disc-enter'} w-full overflow-hidden rounded-3xl bg-white outline-none ${variant === 'overlay' ? 'shadow-2xl shadow-black/30' : 'border border-[#D9E2DE] shadow-sm'
+        }`}
     >
       <div className="p-4 sm:p-5">
         <DiscoveryScene busOnly={busOnly} animate={animate && state !== 'error'} />

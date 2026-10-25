@@ -250,7 +250,7 @@ export async function searchRoutes(from: string, to: string, routeType: 'budget'
       if (durationMatch) {
         durationMinutes = parseInt(durationMatch[1]) * 60 + (parseInt(durationMatch[2]) || 0);
       }
-      
+
       const distanceVal = parseFloat(r.distance.replace(/[^\d.]/g, '')) || 100;
       const priceVal = routeType === 'budget' ? 180 : 350;
 
@@ -313,7 +313,7 @@ export async function searchMultiModalRoutes(
   try {
     response = await fetch(`/api/planner?${params.toString()}`);
   } catch {
-    throw new Error('The route planner is offline. Check your connection and try again.');
+    throw new Error('The server may be waking up. Please wait a moment and try searching again.');
   }
 
   const contentType = response.headers.get('content-type') || '';
