@@ -86,24 +86,42 @@ export const transfersText = (n: number) => (n === 0 ? 'Direct' : `${n} transfer
 // ("🚌 Bus + 🚆 Train — 1 transfer"), so a connecting journey is recognisable before opening the details.
 export function journeyHeading(journey: Journey): string {
   const families = new Set(journey.legs.filter(isTransitLeg).map(leg => vehicleFamilyOf(leg)));
-  const title = journeyTitle(journey);
+  let title = journeyTitle(journey);
+  // For railway journeys, strip "local ride" from the heading per user request
+  if (families.has('train')) {
+    title = title.replace(/🚕 Local ride \+ /g, '').replace(/ \+ 🚕 Local ride/g, '').replace(/^🚕 Local ride$/, '');
+  }
   return families.size > 1 ? `${title} — ${transfersText(journey.transfers)}` : title;
 }
 
 // In this feed a headsign is often just the route number again; only a real destination name is worth showing.
 const showHeadsign = (leg: TransitLeg) => Boolean(leg.headsign) && !/^\d+$/.test(leg.headsign!.trim()) && leg.headsign!.trim() !== serviceNumberOf(leg) && leg.headsign!.trim() !== leg.routeCode;
 
-function walkText(leg: Extract<Leg, { mode: 'walk' }>): string {
-  if (leg.kind === 'access') return `Walk to ${leg.to.name}`;
-  if (leg.kind === 'egress') return 'Walk to your destination';
-  // Between a bus stand and a railway station (bus + train): the two are different places, said plainly.
-  if (isStation(leg.to) || isStation(leg.from)) return `Walk from ${leg.from.name} to ${leg.to.name}`;
-  return `Walk between stops: ${leg.from.name} → ${leg.to.name}`;
+function cleanDisplayName(name: string | null | undefined, fallback: string): string {
+  if (!name) return fallback;
+  const trimmed = name.trim();
+  if (/^origin$/i.test(trimmed) || /^destination$/i.test(trimmed)) {
+    return fallback;
+  }
+  return trimmed;
 }
 
-function legName(leg: Leg): string {
+function walkText(leg: Extract<Leg, { mode: 'walk' }>, from = '', to = ''): string {
+  const fromName = cleanDisplayName(leg.from?.name, from);
+  const toName = cleanDisplayName(leg.to?.name, to);
+  if (leg.kind === 'access') return `Walk to ${toName}`;
+  if (leg.kind === 'egress') return `Walk to ${toName || 'your destination'}`;
+  // Between a bus stand and a railway station (bus + train): the two are different places, said plainly.
+  if (isStation(leg.to) || isStation(leg.from)) return `Walk from ${fromName} to ${toName}`;
+  return `Walk between stops: ${fromName} → ${toName}`;
+}
+
+function legName(leg: Leg, to = ''): string {
   if (isWalkLeg(leg)) return 'Walk';
-  if (isLocalRideLeg(leg)) return leg.kind === 'egress' ? 'Local ride to your destination' : leg.kind === 'transfer' ? `Local ride to ${leg.to.name}` : isStation(leg.to) ? 'Local ride to the station' : 'Local ride to the stop';
+  if (isLocalRideLeg(leg)) {
+    const toName = cleanDisplayName(leg.to?.name, to);
+    return leg.kind === 'egress' ? `Local ride to ${toName || 'To'}` : leg.kind === 'transfer' ? `Local ride to ${toName}` : isStation(leg.to) ? 'Local ride to the station' : 'Local ride to the stop';
+  }
   const number = serviceNumberOf(leg) ?? leg.trainNumber ?? leg.flightNumber ?? null;
   return `${vehicleTitleOf(leg)}${number ? ` ${number}` : ''}`;
 }
@@ -212,7 +230,10 @@ export default function JourneyCard({
   const trainSnapshot = trainLegs.find(leg => leg.scheduleEvidence?.snapshotDate)?.scheduleEvidence?.snapshotDate ?? null;
   const trainFromRailRadar = trainLegs.some(leg => leg.source?.id === 'railradar');
 
-  const corridor = routeInfo ? { from: routeInfo.origin, to: routeInfo.destination } : getRouteCorridor(activeJourney, from, to);
+  const corridor = {
+    from: cleanDisplayName(from, routeInfo?.origin || getRouteCorridor(activeJourney, from, to).from),
+    to: cleanDisplayName(to, routeInfo?.destination || getRouteCorridor(activeJourney, from, to).to)
+  };
   const stopsInfo = routeInfo?.stopsSummary || getRouteStopsSummary(activeJourney);
   const distanceMeters = routeInfo?.totalDistanceMeters || getRouteDistanceMeters(activeJourney);
   const distanceKm = distanceMeters > 0 ? `≈ ${(distanceMeters / 1000).toFixed(distanceMeters >= 100000 ? 0 : 1)} km` : null;
@@ -273,7 +294,11 @@ export default function JourneyCard({
 
       {/* Route Corridor & Stops Overview */}
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#667085] font-semibold">
-        <span className="text-[#1F2933] font-bold">{corridor.from} → {corridor.to}</span>
+        <span className="text-[#1F2933] font-bold">
+          <span className="text-[#667085] font-semibold">From: </span>{corridor.from}
+          <span className="mx-1.5 text-[#98A2B3]">➔</span>
+          <span className="text-[#667085] font-semibold">To: </span>{corridor.to}
+        </span>
         {distanceKm && <span>· {distanceKm}</span>}
         {stopsInfo && <span>· {stopsInfo}</span>}
       </div>
@@ -283,7 +308,7 @@ export default function JourneyCard({
 
       {/* 2. How it goes: the journey strip / slidescroller is hidden per user preference */}
       <section aria-label="Route preview" className="hidden" aria-hidden="true">
-        <JourneySimulation journey={activeJourney} animate={false} hidden />
+        <JourneySimulation journey={activeJourney} from={from} to={to} animate={false} hidden />
       </section>
 
       {/* Available departure times inside this route card */}
@@ -344,7 +369,7 @@ export default function JourneyCard({
       {/* 4. A few short facts, only when they apply */}
       {(hasRide || walks || activeJourney.waitingDurationSeconds > 0) && (
         <ul aria-label="Journey facts" className="mt-3 flex flex-wrap gap-1.5">
-          {hasRide && <FactChip title="A generic auto / cab ride to or from a stop; time and fare are estimates.">Local ride included</FactChip>}
+          {hasRide && trainLegs.length === 0 && <FactChip title="A generic auto / cab ride to or from a stop; time and fare are estimates.">Local ride included</FactChip>}
           {activeJourney.waitingDurationSeconds > 0 && <FactChip title="Time spent waiting at transfer stops.">Waiting {formatDuration(activeJourney.waitingDurationSeconds)}</FactChip>}
           {walks && <FactChip title="Straight-line walking estimate.">Walk {formatDuration(activeJourney.walkingDurationSeconds)}</FactChip>}
         </ul>
@@ -377,7 +402,7 @@ export default function JourneyCard({
           <DetailSection title="Journey breakdown">
             <div className="rounded-xl bg-[#F7FAF9] px-3 sm:px-5 pt-3">
               {/* Static here: the summary strip above is the card's one moving vehicle. */}
-              <JourneySimulation journey={activeJourney} detailed animate={false} />
+              <JourneySimulation journey={activeJourney} from={from} to={to} detailed animate={false} />
             </div>
             <ol className="space-y-2">
               {visibleLegs.map((leg, i) => {
@@ -391,7 +416,7 @@ export default function JourneyCard({
                         Wait {formatDuration(waited * 60)} at {waitAt}
                       </p>
                     )}
-                    <LegStep leg={leg} step={i + 1} />
+                    <LegStep leg={leg} step={i + 1} from={from} to={to} isTrainJourney={trainLegs.length > 0} />
                   </li>
                 );
               })}
@@ -415,7 +440,7 @@ export default function JourneyCard({
               <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-sm">
                 {visibleLegs.filter(leg => !isWalkLeg(leg)).map((leg, i) => {
                   const fare = isWalkLeg(leg) ? null : formatFareRange(leg.fare);
-                  return <Row key={i} label={legName(leg)}>{fare ?? (isTrainLeg(leg) ? 'Fare unavailable' : 'Not priced')}</Row>;
+                  return <Row key={i} label={legName(leg, to)}>{fare ?? (isTrainLeg(leg) ? 'Fare unavailable' : 'Not priced')}</Row>;
                 })}
                 <div className="contents">
                   <dt className="border-t border-[#EEF1EF] pt-1 font-bold text-[#1F2933]">{partialFare ? 'Approx. total (partial)' : 'Approx. total'}</dt>
@@ -466,22 +491,28 @@ export default function JourneyCard({
 }
 
 // One step of the journey, in plain words: what to take, where to board and get off, and for how long.
-function LegStep({ leg, step }: { leg: Leg; step: number }) {
+function LegStep({ leg, step, from = '', to = '', isTrainJourney = false }: { leg: Leg; step: number; from?: string; to?: string; isTrainJourney?: boolean }) {
   const base = 'rounded-xl border px-3.5 py-3 space-y-1';
+  const fromName = cleanDisplayName(isTransitLeg(leg) ? leg.fromStop?.name : leg.from?.name, from);
+  const toName = cleanDisplayName(isTransitLeg(leg) ? leg.toStop?.name : leg.to?.name, to);
+
   if (isWalkLeg(leg)) {
     return (
       <div className={`${base} border-[#E4E9E6] bg-[#FAFBFA]`}>
-        <p className="text-sm font-bold text-[#1F2933]"><span aria-hidden>🚶 </span>{step}. {walkText(leg)}</p>
+        <p className="text-sm font-bold text-[#1F2933]"><span aria-hidden>🚶 </span>{step}. {walkText(leg, from, to)}</p>
         <p className="text-xs text-[#667085]">≈ {formatDuration(leg.durationSeconds)} · about {Math.round(leg.distanceMeters)} m · {clockOf(leg.departureTime)} → {clockOf(leg.arrivalTime)}</p>
       </div>
     );
   }
 
   if (isLocalRideLeg(leg)) {
+    const titleText = isTrainJourney
+      ? `Transfer to ${toName}`
+      : `${leg.label}${leg.kind === 'egress' ? ' to your destination' : leg.kind === 'transfer' ? ` to ${toName}` : isStation(leg.to) ? ' to the station' : ' to the bus stop'}`;
     return (
       <div className={`${base} border-[#F1D29A] bg-[#FFFBF2]`}>
-        <p className="text-sm font-bold text-[#1F2933]"><span aria-hidden>🚕 </span>{step}. {leg.label}{leg.kind === 'egress' ? ' to your destination' : leg.kind === 'transfer' ? ` to ${leg.to.name}` : isStation(leg.to) ? ' to the station' : ' to the bus stop'}</p>
-        <p className="text-sm text-[#1F2933]">{leg.from.name} → <strong>{leg.to.name}</strong></p>
+        <p className="text-sm font-bold text-[#1F2933]"><span aria-hidden>🚕 </span>{step}. {titleText}</p>
+        <p className="text-sm text-[#1F2933]">{fromName} → <strong>{toName}</strong></p>
         <p className="text-xs text-[#667085]">
           ≈ {formatDuration(leg.durationSeconds)} including pickup · about {(leg.distanceMeters / 1000).toFixed(1)} km by road · {clockOf(leg.departureTime)} → {clockOf(leg.arrivalTime)}
         </p>

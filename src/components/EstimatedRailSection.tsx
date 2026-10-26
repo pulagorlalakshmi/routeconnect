@@ -18,7 +18,7 @@ export function RailCorridorStrip({ connection, animate = true }: { connection: 
   return (
     <div className="relative px-1 pt-9 pb-14" aria-label={`From your start, about ${startKm} km to ${connection.startStation.name}, then about ${connection.distanceKm} km of railway to ${connection.endStation.name}, then about ${endKm} km to your destination`}>
       <div className="relative flex items-center">
-        <Dot label="Start" />
+        <Dot label="From" />
         <div className="relative mx-1 h-1.5 flex-[1] rounded-full" style={{ background: `repeating-linear-gradient(90deg, ${ROAD_HEX} 0 6px, transparent 6px 10px)` }}>
           <SegmentLabel text={`${startKm} km`} sub="to station" />
         </div>
@@ -36,7 +36,7 @@ export function RailCorridorStrip({ connection, animate = true }: { connection: 
         <div className="relative mx-1 h-1.5 flex-[1] rounded-full" style={{ background: `repeating-linear-gradient(90deg, ${ROAD_HEX} 0 6px, transparent 6px 10px)` }}>
           <SegmentLabel text={`${endKm} km`} sub="from station" />
         </div>
-        <Dot label="Destination" />
+        <Dot label="To" />
       </div>
     </div>
   );

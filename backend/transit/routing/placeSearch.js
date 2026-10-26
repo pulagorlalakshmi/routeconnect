@@ -9,7 +9,7 @@ import { haversineMeters } from './geo.js';
 
 const CLUSTER_RADIUS_METERS = 4000;
 const MAX_QUERY_LENGTH = 80;
-const GENERIC_WORDS = /\b(bus station|bus stand|bus stop|bus complex|bus terminal|railway station|railway|station|junction|depot)\b/g;
+const GENERIC_WORDS = /\b(bus station|bus stand|bus stop|bus complex|bus terminal|railway station|railway|station|junction|depot|jn|ctl|term|rly|stn)\b/gi;
 
 export function normalizePlaceName(text) {
   const base = String(text ?? '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();

@@ -145,15 +145,29 @@ export function getRouteTravelMode(journey: Journey): 'bus' | 'train' | 'flight'
   return 'combined';
 }
 
+function cleanPlaceName(name: string | null | undefined, fallback: string): string {
+  if (!name) return fallback;
+  const trimmed = name.trim();
+  if (/^origin$/i.test(trimmed) || /^destination$/i.test(trimmed)) {
+    return fallback;
+  }
+  return trimmed;
+}
+
 export function getRouteCorridor(journey: Journey, fallbackFrom = '', fallbackTo = ''): { from: string; to: string } {
   if (!journey || !Array.isArray(journey.legs) || journey.legs.length === 0) {
-    return { from: fallbackFrom, to: fallbackTo };
+    return { from: cleanPlaceName(fallbackFrom, 'From'), to: cleanPlaceName(fallbackTo, 'To') };
   }
   const first = journey.legs[0];
   const last = journey.legs.at(-1)!;
-  const fromName = (isTransitLeg(first) ? first.fromStop?.name : first.from?.name) || fallbackFrom;
-  const toName = (isTransitLeg(last) ? last.toStop?.name : last.to?.name) || fallbackTo;
-  return { from: fromName, to: toName };
+  const legFrom = (isTransitLeg(first) ? first.fromStop?.name : first.from?.name);
+  const legTo = (isTransitLeg(last) ? last.toStop?.name : last.to?.name);
+  const fromName = (fallbackFrom && !/^origin$/i.test(fallbackFrom.trim())) ? fallbackFrom : (legFrom || fallbackFrom);
+  const toName = (fallbackTo && !/^destination$/i.test(fallbackTo.trim())) ? fallbackTo : (legTo || fallbackTo);
+  return {
+    from: cleanPlaceName(fromName, 'From'),
+    to: cleanPlaceName(toName, 'To')
+  };
 }
 
 export function getRouteStopsSummary(journey: Journey): string {

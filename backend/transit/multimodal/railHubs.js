@@ -42,7 +42,7 @@ export const HUB_DEFAULTS = Object.freeze({
   stationBufferMinutes: 30       // boarding + leaving the station
 });
 
-const JUNCTION = /junction|\bjn\b/i;
+const JUNCTION = /junction|\bjn\b|\bctl\b|central|\bterm\b|terminus/i;
 export const isJunction = station => JUNCTION.test(station?.name ?? '');
 
 const busSideCache = new WeakMap();
@@ -147,7 +147,6 @@ export function hubCandidates({ stations, nearby = null, point, other, role, net
     if (!station.code || seen.has(station.code) || exclude.has(station.code)) continue;
     const toOther = haversineMeters(station.lat, station.lon, other.lat, other.lon);
     if (crow > 0 && (meters + toOther) / crow > options.maxDetourRatio) continue;
-    if (meters > 15000 && toOther >= crow) continue; // a far hub must make progress toward the other end
     const junction = isJunction(station);
     const importance = importanceOf(station);
     // Beyond ride range only genuine interchanges: a large station (never a wayside halt) with a real bus side.
@@ -155,6 +154,13 @@ export function hubCandidates({ stations, nearby = null, point, other, role, net
     if (meters > options.maxRideMeters && (station.kind === 'halt' || importance < options.minHubImportance)) continue;
     const side = stationBusSide(network, station);
     if (meters > options.maxRideMeters && side.strength < options.minBusSideStrength) continue;
+
+    // A far hub must generally make progress toward the other end. For major interchange junctions
+    // or strong bus-rail hubs, allow a moderate corridor overshoot (up to 50 km or 60% of distance to hub)
+    // as long as the total detour ratio remains well within the allowed bound.
+    const isMajorHub = junction || importance >= options.minHubImportance || side.strength >= options.minBusSideStrength;
+    const allowedOvershoot = isMajorHub ? Math.min(50000, 0.6 * meters) : 0;
+    if (meters > 15000 && toOther >= crow + allowedOvershoot) continue;
 
     let via = null;
     let minutes = Infinity;

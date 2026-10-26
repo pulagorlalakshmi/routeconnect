@@ -53,17 +53,21 @@ export default function JourneyTimeline({
   }, [journey.legs]);
 
   const originName = useMemo(() => {
-    if (corridor?.from) return corridor.from;
+    if (from && from.trim() && !/^origin$/i.test(from.trim())) return from.trim();
+    if (corridor?.from && !/^origin$/i.test(corridor.from.trim())) return corridor.from;
     const firstLeg = journey.legs?.[0];
-    if (!firstLeg) return from || 'Origin';
-    return isTransitLeg(firstLeg) ? firstLeg.fromStop?.name : firstLeg.from?.name || from || 'Origin';
+    const raw = isTransitLeg(firstLeg) ? firstLeg.fromStop?.name : firstLeg?.from?.name;
+    if (raw && !/^origin$/i.test(raw.trim())) return raw;
+    return from || 'From';
   }, [corridor?.from, journey.legs, from]);
 
   const destinationName = useMemo(() => {
-    if (corridor?.to) return corridor.to;
+    if (to && to.trim() && !/^destination$/i.test(to.trim())) return to.trim();
+    if (corridor?.to && !/^destination$/i.test(corridor.to.trim())) return corridor.to;
     const lastLeg = journey.legs?.at(-1);
-    if (!lastLeg) return to || 'Destination';
-    return isTransitLeg(lastLeg) ? (lastLeg as TransitLeg).toStop?.name : lastLeg.to?.name || to || 'Destination';
+    const raw = isTransitLeg(lastLeg) ? (lastLeg as TransitLeg).toStop?.name : lastLeg?.to?.name;
+    if (raw && !/^destination$/i.test(raw.trim())) return raw;
+    return to || 'To';
   }, [corridor?.to, journey.legs, to]);
 
   const depTime = clockOf(journey.departureTime);
@@ -197,7 +201,7 @@ export default function JourneyTimeline({
           {/* Origin Marker */}
           <div
             className="w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full bg-white border-2 border-[#146B5B] shadow-sm flex items-center justify-center ring-4 ring-[#146B5B]/15"
-            title={`Origin: ${originName} (Departs ${depTime})`}
+            title={`From: ${originName} (Departs ${depTime})`}
           >
             <div className="w-1.5 h-1.5 rounded-full bg-[#146B5B]" />
           </div>
@@ -279,7 +283,7 @@ export default function JourneyTimeline({
           {/* Destination Marker */}
           <div
             className="w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full bg-[#146B5B] border-2 border-white shadow-sm flex items-center justify-center ring-4 ring-[#146B5B]/25"
-            title={`Destination: ${destinationName} (Arrives ${arrTime}${extraDays > 0 ? ` +${extraDays}d` : ''})`}
+            title={`To: ${destinationName} (Arrives ${arrTime}${extraDays > 0 ? ` +${extraDays}d` : ''})`}
           >
             <div className="w-1.5 h-1.5 rounded-full bg-white" />
           </div>

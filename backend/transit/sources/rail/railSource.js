@@ -27,6 +27,7 @@ import { searchRail, toTrunk } from '../../rail/railSearch.js';
 import { estimateLocalRide, estimateWalk } from '../../routing/accessEgress.js';
 import { getRoutingConfig } from '../../routing/config.js';
 import { COMPOSE_DEFAULTS } from '../../multimodal/compose.js';
+import { busReachFrom, hubCandidates, rankStationPairs, HUB_DEFAULTS } from '../../multimodal/railHubs.js';
 
 // Same order as weekdayIndex(): 0 = Monday ... 6 = Sunday.
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -227,6 +228,72 @@ function searchRailDatabase({ network, freshness, config }, ctx) {
   const scheduleConfidence = freshness.status === 'fresh' ? 'published' : 'inferred';
   const searchDay = isoToDayNumber(ctx.date);
   const trunks = result.journeys.map(journey => journey.legs.map(leg => toTrunk(network, leg, { searchDay, utcOffset: ctx.utcOffset ?? '+05:30', operatorInfo, scheduleConfidence, source })));
+
+  for (const seq of trunks) {
+    if (seq[0]) {
+      seq[0].planning = { inWindow: true, pair: { role: 'anchor', access: 'ride', egress: 'ride' } };
+    }
+  }
+
+  // Hub pairs for multimodal journeys (e.g. Bus + Train or Train + Bus when connecting to an interchange hub)
+  if (ctx.crowFliesMeters >= 25000 || ctx.busAllowed) {
+    try {
+      const busAllowed = ctx.busAllowed !== false && Boolean(ctx.network);
+      const reach = busAllowed ? busReachFrom(ctx.network, ctx.origin, { date: ctx.date, timeSeconds: ctx.windowStartSeconds, config: routing }) : null;
+      const isTermOrJn = s => /junction|\bjn\b|\bctl\b|central|\bterm\b|terminus/i.test(s.name);
+      const importanceOf = s => {
+        const idx = network.stationIndex.get(s.code);
+        if (idx === undefined) return 0.3;
+        const count = (network.stationStops[idx]?.length ?? 0) / 2;
+        return Math.min(1, (count / 80) + (isTermOrJn(s) ? 0.3 : 0));
+      };
+      const validStations = network.stations.filter(s => s.lat !== null && s.code);
+      const common = { stations: validStations, nearby: null, network: ctx.network ?? null, busAllowed, config: routing, importanceOf, options: HUB_DEFAULTS };
+      const origins = hubCandidates({ ...common, point: ctx.origin, other: ctx.destination, role: 'origin', reach });
+      const destinations = hubCandidates({ ...common, point: ctx.destination, other: ctx.origin, role: 'destination' });
+      const anchorOrigins = new Set(result.originStations.map(o => network.stations[o.s]?.code).filter(Boolean));
+      const anchorDests = new Set(result.destinationStations.map(d => network.stations[d.s]?.code).filter(Boolean));
+      const pairs = rankStationPairs({ origins, destinations })
+        .filter(p => !anchorOrigins.has(p.from.station.code) || !anchorDests.has(p.to.station.code))
+        .filter(p => p.from.via === 'bus' || p.to.via === 'bus')
+        .slice(0, 4);
+
+      for (const pair of pairs) {
+        const pairStart = pair.from.via === 'bus'
+          ? ctx.windowStartSeconds + Math.round(pair.from.minutes * 60) + COMPOSE_DEFAULTS.bufferBeforeSeconds.rail
+          : ctx.windowStartSeconds + Math.round(pair.from.minutes * 60);
+        const pairWindow = Math.max(ctx.windowEndSeconds - ctx.windowStartSeconds, 6 * 3600);
+        const hubResult = searchRail(network, {
+          ...ctx,
+          windowStartSeconds: pairStart,
+          windowEndSeconds: pairStart + pairWindow
+        }, {
+          originStationCodes: [pair.from.station.code],
+          destinationStationCodes: [pair.to.station.code],
+          minTransferSeconds: config.search.minTransferSeconds,
+          maxTransferWaitSeconds: config.search.maxTransferWaitSeconds,
+          boardBufferSeconds: COMPOSE_DEFAULTS.bufferBeforeSeconds.rail,
+          alightBufferSeconds: COMPOSE_DEFAULTS.bufferAfterSeconds.rail,
+          accessSeconds,
+          maxResults: 4
+        });
+
+        for (const journey of hubResult.journeys) {
+          const seq = journey.legs.map(leg => toTrunk(network, leg, { searchDay, utcOffset: ctx.utcOffset ?? '+05:30', operatorInfo, scheduleConfidence, source }));
+          if (seq.length > 0) {
+            seq[0].planning = {
+              inWindow: true,
+              pair: { role: 'hub', access: pair.from.via, egress: pair.to.via }
+            };
+            trunks.push(seq);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Rail hub search error:', err.message);
+    }
+  }
+
   return {
     trunks,
     meta: {

@@ -491,10 +491,10 @@ export default function RouteCard({
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 sm:p-5 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-black uppercase tracking-wider text-slate-500">
-              📍 STEP {step.stepNumber} — START
+              📍 STEP {step.stepNumber} — FROM
             </span>
             <span className="text-[11px] font-bold text-slate-500 bg-white border border-slate-200 px-2 py-0.5 rounded">
-              Origin
+              From: {step.location}
             </span>
           </div>
           <p className="mt-2 text-base sm:text-lg font-black text-[#1F2933]">
@@ -513,10 +513,10 @@ export default function RouteCard({
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 sm:p-5 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-black uppercase tracking-wider text-rose-800">
-              📍 STEP {step.stepNumber} — DESTINATION
+              📍 STEP {step.stepNumber} — TO
             </span>
             <span className="text-[11px] font-bold text-rose-800 bg-white border border-rose-200 px-2 py-0.5 rounded">
-              Final Destination
+              To: {step.location}
             </span>
           </div>
           <p className="mt-2 text-base sm:text-lg font-black text-[#1F2933]">
@@ -999,9 +999,9 @@ export default function RouteCard({
       {/* Card Action Row: Overview & Show Details Toggle */}
       <div className="pt-3 flex items-center justify-between border-t border-gray-100 flex-wrap gap-2">
         <div className="text-xs text-[#667085] font-medium flex items-center gap-1.5 truncate">
-          <span className="font-bold text-gray-800">{route.from}</span>
-          <span className="text-gray-400">➔</span>
-          <span className="font-bold text-gray-800">{route.to}</span>
+          <span className="text-[#667085] font-semibold">From: </span><span className="font-bold text-gray-800">{route.from}</span>
+          <span className="text-gray-400 mx-1">➔</span>
+          <span className="text-[#667085] font-semibold">To: </span><span className="font-bold text-gray-800">{route.to}</span>
           {route.via && (
             <span className="text-gray-500 text-[11px] ml-1">· via {route.via}</span>
           )}

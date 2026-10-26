@@ -18,7 +18,7 @@ const MAX_SEARCH_BEFORE_MINUTES = 720; // ... more for far stations (a bus to a 
 const PLANNING_BUS_KPH = 30;           // only to size that search window (never shown as a journey time); long APSRTC
                                        // rides average ~30-35 km/h over the straight-line distance
 const ACCESS_WINDOW_MINUTES = 120;
-const EGRESS_WINDOW_MINUTES = 120;
+const EGRESS_WINDOW_MINUTES = 180;
 const DEFAULT_MAX_CALLS = 20;
 // A bus alternative must save at least this much of the local-ride time it replaces (absolute and relative).
 const MIN_RIDE_SAVING_SECONDS = 10 * 60;

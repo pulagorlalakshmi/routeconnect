@@ -38,7 +38,7 @@ export const RAIL_SEARCH_DEFAULTS = Object.freeze({
   // A journey taking longer than this multiple of the fastest train journey found is noise, not an option.
   maxDurationRatio: 1.5,
   // Sparse routes: when nothing departs inside the window, look this much further once (times shown are real).
-  extendIfEmptySeconds: 6 * 3600,
+  extendIfEmptySeconds: 16 * 3600,
   // A change must not send the traveller far out of their way: the two legs' straight-line lengths may add up to at most
   // this multiple of the trip's straight-line length.
   maxTransferDetour: 1.5,
@@ -61,8 +61,10 @@ export function discoverStations(network, point, { radiusMeters, nearestStations
   });
   within.sort((a, b) => a.meters - b.meters || a.s - b.s);
   const chosen = within.slice(0, nearestStations);
-  const busiest = within.slice(nearestStations).sort((a, b) => trainCountAt(network, b.s) - trainCountAt(network, a.s) || a.meters - b.meters);
-  chosen.push(...busiest.slice(0, busiestStations));
+  const isTermOrJn = s => /central|\bctl\b|\bjn\b|junction|\bterm\b/i.test(network.stations[s].name);
+  const stationWeight = s => trainCountAt(network, s) + (isTermOrJn(s) ? 500 : 0);
+  const busiest = within.slice(nearestStations).sort((a, b) => stationWeight(b.s) - stationWeight(a.s) || a.meters - b.meters);
+  chosen.push(...busiest.slice(0, Math.max(busiestStations, 4)));
   return chosen.map(entry => ({ ...entry, accessSeconds: accessSeconds(entry.meters) }));
 }
 

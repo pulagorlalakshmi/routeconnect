@@ -76,8 +76,10 @@ function setVehicleMode(runner: HTMLElement, mode: SimMode) {
   });
 }
 
-export default function JourneySimulation({ journey, detailed = false, animate, progress: fixedProgress, hidden = false }: {
+export default function JourneySimulation({ journey, from = '', to = '', detailed = false, animate, progress: fixedProgress, hidden = false }: {
   journey: Pick<Journey, 'legs'>;
+  from?: string;
+  to?: string;
   detailed?: boolean;
   // Test/preview override; normally decided from prefers-reduced-motion and visibility. `false` always gives the static diagram.
   animate?: boolean;
@@ -85,7 +87,7 @@ export default function JourneySimulation({ journey, detailed = false, animate, 
   progress?: number;
   hidden?: boolean;
 }) {
-  const sim = useMemo(() => buildSimulation(journey), [journey]);
+  const sim = useMemo(() => buildSimulation(journey, from, to), [journey, from, to]);
   const timeline: Timeline = useMemo(() => buildTimeline(sim), [sim]);
   const root = useRef<HTMLDivElement | null>(null);
   const runner = useRef<HTMLSpanElement | null>(null);

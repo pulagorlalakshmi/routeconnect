@@ -255,7 +255,7 @@ export function assembleJourney(network, candidate, ctx) {
   let worstQuality = 0;
 
   if (access && accessSeconds > 0) {
-    const from = { type: 'origin', name: 'Origin', lat: ctx.origin.lat, lon: ctx.origin.lon };
+    const from = { type: 'origin', name: ctx.origin.name || 'Origin', lat: ctx.origin.lat, lon: ctx.origin.lon };
     legs.push(endLeg('access', access, from, stopRef(network, chain.accessStop), originDeparture, fmt, fareConfig));
     allConfidences.push(CONFIDENCE.ESTIMATED);
     if (access.mode === 'local_ride') { rideSeconds += accessSeconds; rideCount++; rideStraightMeters += access.straightLineMeters; }
@@ -344,7 +344,7 @@ export function assembleJourney(network, candidate, ctx) {
   const finalArrival = clock;
   const egressSeconds = egress?.durationSeconds ?? 0;
   if (egress && egressSeconds > 0) {
-    const to = { type: 'destination', name: 'Destination', lat: ctx.destination.lat, lon: ctx.destination.lon };
+    const to = { type: 'destination', name: ctx.destination.name || 'Destination', lat: ctx.destination.lat, lon: ctx.destination.lon };
     legs.push(endLeg('egress', egress, stopRef(network, egressStop), to, finalArrival, fmt, fareConfig));
     allConfidences.push(CONFIDENCE.ESTIMATED);
     if (egress.mode === 'local_ride') { rideSeconds += egressSeconds; rideCount++; rideStraightMeters += egress.straightLineMeters; }

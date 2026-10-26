@@ -50,9 +50,12 @@ const MODE_NAME: Record<SimMode, string> = {
   walk: 'Walk', local_ride: 'Local ride', bike: 'Bike ride', bus: 'Bus', train: 'Train', flight: 'Flight', ferry: 'Ferry'
 };
 
-function endpoints(leg: Leg): { from: string; to: string; dep: string; arr: string } {
-  if (isTransitLeg(leg)) return { from: leg.fromStop.name, to: leg.toStop.name, dep: leg.departureTime, arr: leg.arrivalTime };
-  return { from: leg.from.name, to: leg.to.name, dep: leg.departureTime, arr: leg.arrivalTime };
+function endpoints(leg: Leg, fromText = '', toText = ''): { from: string; to: string; dep: string; arr: string } {
+  let from = isTransitLeg(leg) ? leg.fromStop.name : leg.from.name;
+  let to = isTransitLeg(leg) ? leg.toStop.name : leg.to.name;
+  if (fromText && /^origin$/i.test(from.trim())) from = fromText;
+  if (toText && /^destination$/i.test(to.trim())) to = toText;
+  return { from, to, dep: leg.departureTime, arr: leg.arrivalTime };
 }
 
 function modeName(leg: Leg, mode: SimMode): string {
@@ -61,14 +64,14 @@ function modeName(leg: Leg, mode: SimMode): string {
   return MODE_NAME[mode];
 }
 
-export function buildSimulation(journey: Pick<Journey, 'legs'>): Simulation {
+export function buildSimulation(journey: Pick<Journey, 'legs'>, fromText = '', toText = ''): Simulation {
   const legs = journey.legs.filter(leg => !(isWalkLeg(leg) && leg.durationSeconds < TRIVIAL_WALK_SECONDS));
   const segments: SimSegment[] = [];
   const nodes: SimNode[] = [];
 
   legs.forEach((leg, i) => {
     const mode = simulationModeOf(leg);
-    const { from, to, dep, arr } = endpoints(leg);
+    const { from, to, dep, arr } = endpoints(leg, fromText, toText);
     if (i === 0) nodes.push({ name: from, kind: 'origin', time: dep, waitSeconds: 0 });
     // Waiting at the node before this leg: the gap between arriving there and this leg leaving (never negative).
     else nodes[i].waitSeconds = Math.max(0, Math.round((Date.parse(dep) - Date.parse(nodes[i].time ?? dep)) / 1000)) || 0;

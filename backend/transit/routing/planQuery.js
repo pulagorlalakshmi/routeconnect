@@ -75,6 +75,6 @@ export function parsePlanQuery(raw, config, now = new Date()) {
   if (errors.length > 0) return { ok: false, errors };
   return {
     ok: true,
-    value: { fromLat, fromLng, toLat, toLng, date, time, timeSeconds: parseClockTime(time), maxTransfers, windowMinutes }
+    value: { fromLat, fromLng, toLat, toLng, date, time, timeSeconds: parseClockTime(time), maxTransfers, windowMinutes, from: single('from'), to: single('to') }
   };
 }

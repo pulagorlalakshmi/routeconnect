@@ -143,8 +143,8 @@ export function planJourneys(network, query, { config = getRoutingConfig(), fare
   }
   warn('UNVERIFIED_DATASET', 'info', 'Schedule data comes from a community-maintained dataset and has not been verified by the transit operator.');
 
-  const origin = { lat: query.fromLat, lon: query.fromLng };
-  const destination = { lat: query.toLat, lon: query.toLng };
+  const origin = { lat: query.fromLat, lon: query.fromLng, name: resolved?.from?.name || (typeof query.from === 'string' && query.from.trim() ? query.from.trim() : 'Origin') };
+  const destination = { lat: query.toLat, lon: query.toLng, name: resolved?.to?.name || (typeof query.to === 'string' && query.to.trim() ? query.to.trim() : 'Destination') };
   const serviceDays = buildServiceDays(network, query, config);
   const anchorDayNumber = isoToDayNumber(query.date);
   const windowStart = query.timeSeconds;
