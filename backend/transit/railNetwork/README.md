@@ -26,7 +26,8 @@ never mixed into, counted with or ranked against `/api/v2/plan` journeys. The se
   requests / 1 GB per day); nothing is queried per user search.
 - Licence: **ODbL 1.0**. Attribution "© OpenStreetMap contributors" (linked to https://www.openstreetmap.org/copyright)
   is shown under every corridor map and on the Data & policies page. `rail-network.json` is a derived database: if it
-  is ever distributed, it must be under ODbL too. By default it is generated on the server and git-ignored.
+  is distributed, it must be under ODbL too. The generated working copy is git-ignored; a gzipped copy is shipped as
+  `seed/rail-network.json.gz` under ODbL with attribution (see `seed/README.md`).
 - OpenRailwayMap renders the same OSM data; RouteConnect uses OSM directly and needs no OpenRailwayMap tiles or API.
 
 ## Pipeline
@@ -91,8 +92,11 @@ The preference dialog offers **No preference · Bus · Estimated rail · Schedul
   exists; otherwise ONE Overpass extract is fetched, unless `ROUTECONNECT_RAIL_NETWORK_AUTO_EXTRACT=false`. Until it
   is ready, `/api/v2/capabilities` reports `estimatedRail.state` as `preparing`, `missing` or `failed`.
 
-- `render:build` runs `rail:network:ensure`: it builds if the graph is missing and extracts (one Overpass request) only if
-  there is no raw extract yet. Set `ROUTECONNECT_RAIL_NETWORK_DIR=/var/data/railNetwork` on a persistent disk so redeploys
+- When neither a graph nor a raw extract exists, the shipped seed (`seed/rail-network.json.gz`) is installed, so start-up
+  needs no Overpass request (important on hosts whose disk is wiped on every restart, e.g. the Render free tier).
+  After `rail:network:update`, run `rail:network:seed` and commit the seed to ship the refresh.
+- `render:build` runs `rail:network:ensure`: it builds if the graph is missing, installs the seed, and extracts (one
+  Overpass request) only if there is neither a raw extract nor a seed. Set `ROUTECONNECT_RAIL_NETWORK_DIR=/var/data/railNetwork` on a persistent disk so redeploys
   reuse it instead of querying Overpass again. Storage: about 10 MB.
 - Refresh with `npm run rail:network:update` every few months; status reports `needsRefresh` after 180 days.
 - `ROUTECONNECT_RAIL_NETWORK_ENABLED=false` turns the explorer off; the capability then reports it unavailable and the

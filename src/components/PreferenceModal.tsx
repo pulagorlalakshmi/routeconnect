@@ -49,6 +49,8 @@ export interface PreferenceModalProps {
   availableModes?: readonly TransportMode[];
   trainSnapshotDate?: string | null;
   trainSourceName?: string | null;
+  // Why scheduled trains are unavailable (from the server), shown in preference to the explorer's own reason.
+  trainReason?: string | null;
   // Estimated rail connections (mapped railway network): availability and the reason when it is not available.
   estimatedRail?: EstimatedRailAvailability;
   initialView?: SearchView;
@@ -62,7 +64,7 @@ const seedChoice = (modes: TravelPreferences['modes'], view: SearchView, choices
 
 const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
 
-export default function PreferenceModal({ open, initial, trip, onConfirm, onClose, stage, stageLabel = 'Finding routes', availableModes = DEFAULT_AVAILABLE_MODES, trainSourceName = null, estimatedRail = { available: false }, initialView = 'planned' }: PreferenceModalProps) {
+export default function PreferenceModal({ open, initial, trip, onConfirm, onClose, stage, stageLabel = 'Finding routes', availableModes = DEFAULT_AVAILABLE_MODES, trainSourceName = null, trainReason = null, estimatedRail = { available: false }, initialView = 'planned' }: PreferenceModalProps) {
   const availabilityKey = `${availableModes.join(',')}|${estimatedRail.available}|${estimatedRail.state ?? ''}`;
   const choices = useMemo(() => travelChoicesFor({ availableModes, estimatedRail }), [availabilityKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [choiceId, setChoiceId] = useState<TravelChoiceId>(() => seedChoice(initial.modes, initialView, choices));
@@ -136,7 +138,7 @@ export default function PreferenceModal({ open, initial, trip, onConfirm, onClos
     ? trainSourceNote(trainSourceName)
     : estimatedRail.available
       ? TRAIN_ESTIMATE_NOTE
-      : `Train: ${estimatedRail.reason ?? 'Train suggestions are not available right now.'} Bus search still works.`;
+      : `Train: ${trainReason ?? estimatedRail.reason ?? 'Train suggestions are not available right now.'} Bus search still works.`;
 
   const content = (
     <div className="rc-pref-overlay fixed inset-0 z-[100] flex items-end justify-center sm:items-center sm:p-6">

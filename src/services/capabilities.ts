@@ -74,12 +74,15 @@ export function unreachableCapabilities(detail: string): Capabilities {
 
 let cached: { value: Capabilities; at: number } | null = null;
 let inflight: Promise<Capabilities> | null = null;
-// A ready answer is kept for a while; anything else (preparing, failed, not checked) is asked again soon.
+// A settled answer is kept for a while; one that can still change on its own (preparing, server not reached) is asked
+// again soon. A failed or missing explorer only changes after a server restart, and scheduled trains do not depend on it.
 const READY_TTL_MS = 5 * 60 * 1000;
 const RETRY_TTL_MS = 4 * 1000;
+export const capabilitiesSettled = (value: Capabilities): boolean =>
+  value.loaded && value.estimatedRail.state !== 'preparing' && value.estimatedRail.state !== 'unknown';
 
 export function fetchCapabilities({ force = false } = {}): Promise<Capabilities> {
-  const ttl = cached?.value.estimatedRail.available ? READY_TTL_MS : RETRY_TTL_MS;
+  const ttl = cached && capabilitiesSettled(cached.value) ? READY_TTL_MS : RETRY_TTL_MS;
   if (!force && cached && Date.now() - cached.at < ttl) return Promise.resolve(cached.value);
   if (!inflight) {
     inflight = fetch('/api/v2/capabilities')
@@ -104,7 +107,7 @@ export function useCapabilities({ poll = false }: { poll?: boolean } = {}): Capa
     fetchCapabilities().then(next => { if (active) setValue(next); });
     return () => { active = false; };
   }, []);
-  const settled = value.estimatedRail.available || value.estimatedRail.state === 'disabled' || value.estimatedRail.state === 'missing';
+  const settled = capabilitiesSettled(value);
   useEffect(() => {
     if (!poll || settled) return;
     const timer = window.setInterval(() => { fetchCapabilities().then(setValue); }, RETRY_TTL_MS);

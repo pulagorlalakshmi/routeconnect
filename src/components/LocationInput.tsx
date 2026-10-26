@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useId } from 'react';
 import { MapPin, Navigation, Map, X, Check, AlertCircle, Loader2, CircleDot } from 'lucide-react';
-import { searchPlaces } from '../services/planService';
+import { fetchPlaces, PlacesError, warmUpServer } from '../services/planService';
 import type { PlaceSuggestion } from '../services/planService';
 
 declare global {
@@ -17,6 +17,20 @@ export interface SuggestionItem {
   lat?: number;
   lon?: number;
 }
+
+// What the suggestion list says while it has nothing to show. A slow or failed lookup is never reported as "no match".
+export type SuggestionsStatus = 'idle' | 'loading' | 'waking' | 'error';
+export const SUGGESTION_MESSAGES: Record<Exclude<SuggestionsStatus, 'idle'>, string> & { empty: string } = {
+  loading: 'Searching stops…',
+  waking: 'Waking up the route server… the first search after a quiet spell can take up to a minute.',
+  error: 'The stop search is not responding right now. Please try again in a moment.',
+  empty: 'No matching stop in the transit timetable.'
+};
+export const SUGGESTIONS_DEBOUNCE_MS = 250;
+// After this long without an answer the server is probably waking up from sleep: say so.
+export const SUGGESTIONS_SLOW_MS = 2500;
+// Retries while the server wakes (each attempt also has its own timeout, see fetchPlaces). Then give up and say so.
+export const SUGGESTIONS_RETRY_DELAYS_MS = [2000, 4000, 8000];
 
 const toSuggestion = (place: PlaceSuggestion): SuggestionItem => ({
   name: place.name,
@@ -199,31 +213,46 @@ export default function LocationInput({ kind = 'origin', label, placeholder, val
 
   // Suggestions come from the stops in the transit timetable, so every suggestion can actually be routed.
   const [placeSuggestions, setPlaceSuggestions] = useState<SuggestionItem[]>([]);
-  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [suggestionsStatus, setSuggestionsStatus] = useState<SuggestionsStatus>('idle');
+
+  useEffect(() => { warmUpServer(); }, []);
 
   useEffect(() => {
     const query = value.trim();
     if (!isFocused || query.length < 1 || /current\s*location/i.test(query)) {
       setPlaceSuggestions([]);
-      setSuggestionsLoading(false);
+      setSuggestionsStatus('idle');
       return;
     }
     const controller = new AbortController();
-    setSuggestionsLoading(true);
-    const timer = setTimeout(() => {
-      searchPlaces(query, controller.signal)
-        .then(places => {
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const later = (ms: number) => new Promise<void>(resolve => { timers.push(setTimeout(resolve, ms)); });
+    setSuggestionsStatus('loading');
+    timers.push(setTimeout(() => setSuggestionsStatus(status => (status === 'loading' ? 'waking' : status)), SUGGESTIONS_SLOW_MS));
+    (async () => {
+      await later(SUGGESTIONS_DEBOUNCE_MS);
+      for (let attempt = 0; ; attempt++) {
+        if (controller.signal.aborted) return;
+        try {
+          const places = await fetchPlaces(query, controller.signal);
+          if (controller.signal.aborted) return;
           setPlaceSuggestions(places.map(toSuggestion));
-          setSuggestionsLoading(false);
-        })
-        .catch(error => {
-          if ((error as Error).name === 'AbortError') return;
-          setPlaceSuggestions([]);
-          setSuggestionsLoading(false);
-        });
-    }, 180);
+          setSuggestionsStatus('idle');
+          return;
+        } catch (error) {
+          if (controller.signal.aborted || !(error instanceof PlacesError)) return;
+          if (attempt >= SUGGESTIONS_RETRY_DELAYS_MS.length) {
+            setPlaceSuggestions([]);
+            setSuggestionsStatus('error');
+            return;
+          }
+          setSuggestionsStatus('waking');
+          await later(SUGGESTIONS_RETRY_DELAYS_MS[attempt]);
+        }
+      }
+    })();
     return () => {
-      clearTimeout(timer);
+      timers.forEach(clearTimeout);
       controller.abort();
     };
   }, [value, isFocused]);
@@ -472,7 +501,7 @@ export default function LocationInput({ kind = 'origin', label, placeholder, val
             ) : (
               value.trim() !== '' && (
                 <div className="px-4 py-3 text-xs text-[#667085] font-medium text-center">
-                  {suggestionsLoading ? 'Searching stops…' : 'No matching stop in the transit timetable.'}
+                  {suggestionsStatus === 'idle' ? SUGGESTION_MESSAGES.empty : SUGGESTION_MESSAGES[suggestionsStatus]}
                 </div>
               )
             )}

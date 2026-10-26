@@ -223,7 +223,7 @@ describe('route-discovery panel', () => {
       assert.ok(!text.includes(claim), claim);
     }
     assert.doesNotMatch(text, /\d+\s*%/);
-    assert.equal(ui.SLOW_STATUS, 'Still searching… this can take a few seconds.');
+    assert.equal(ui.SLOW_STATUS, 'Still searching… the server may take a little longer to wake up after inactivity.');
   });
 
   test('Bus only shows a bus marker; no preference a neutral one; never any train visuals', () => {

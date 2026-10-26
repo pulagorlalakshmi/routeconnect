@@ -61,6 +61,10 @@ export function getCapabilities({ env = process.env, now = new Date(), getNetwor
     rail = state.configured
       ? { available: true, reason: null, snapshotDate: null, freshness: null, source: { name: 'RailRadar', official: false }, provider: 'railradar' }
       : { available: false, reason: state.reason, provider: 'railradar' };
+  } else if (rail.code === 'RAIL_DISABLED') {
+    // Neither source is set up (typically: RAILRADAR_API_KEY not set in the host's environment). Say that plainly
+    // rather than pointing at the optional imported timetable switch.
+    rail = { ...rail, reason: 'Scheduled train search is not set up on this server yet (no RailRadar key is configured).' };
   }
   let explorer = { available: false };
   try { explorer = railNetwork(); } catch { explorer = { available: false }; }

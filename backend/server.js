@@ -485,10 +485,10 @@ app.listen(PORT, "0.0.0.0", () => {
   // Bootstrap or warm the in-memory transit network
   bootstrapTransit();
   bootstrapRail();
-  // Estimated rail connections: build the network graph if it is missing (from the saved extract, or ONE Overpass
-  // extract when none exists). Runs in the background; until it finishes the capability reports "preparing".
+  // Estimated rail connections: prepare the network graph if it is missing (from the saved extract, the seed shipped
+  // with the code, or ONE Overpass extract when neither exists). Scheduled trains (RailRadar) do not wait for this. Runs in the background; until it finishes the capability reports "preparing".
   ensureRailNetwork().then(result => {
-    if (result.ready) console.log(`[Rail network] Estimated rail connections ready${result.built ? ' (graph built now)' : ''}.`);
+    if (result.ready) console.log(`[Rail network] Estimated rail connections ready${result.built ? ' (graph built now)' : result.seeded ? ' (installed from the shipped seed)' : ''}.`);
     else console.warn(`[Rail network] Estimated rail connections unavailable (${result.reason}${result.error ? `: ${result.error}` : ''}).`);
   });
 });

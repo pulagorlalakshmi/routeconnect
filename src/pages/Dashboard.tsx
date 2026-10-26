@@ -326,6 +326,7 @@ export default function Dashboard() {
         availableModes={capabilities.availableModes}
         trainSnapshotDate={capabilities.train.snapshotDate}
         trainSourceName={capabilities.train.sourceName}
+        trainReason={capabilities.train.reason}
         estimatedRail={capabilities.estimatedRail}
         initialView={view}
         onClose={handleClosePreferences}

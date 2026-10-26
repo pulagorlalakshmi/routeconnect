@@ -395,9 +395,72 @@ export async function fetchPlan(params: PlanParams, signal?: AbortSignal): Promi
   throw new PlanError('SERVER_ERROR', body?.error ?? 'The route planner could not complete this search.');
 }
 
-export async function searchPlaces(query: string, signal?: AbortSignal): Promise<PlaceSuggestion[]> {
-  const response = await fetch(`/api/v2/places?${new URLSearchParams({ query, limit: '8' }).toString()}`, { signal });
-  if (!response.ok) return [];
+// Stop search failures, kept apart from "no matching stop": TIMEOUT / OFFLINE usually mean the free-tier server is still
+// waking up; UNAVAILABLE means it answered but its timetable is not loaded yet (503) or it failed (5xx).
+export type PlacesErrorCode = 'TIMEOUT' | 'OFFLINE' | 'UNAVAILABLE';
+export class PlacesError extends Error {
+  code: PlacesErrorCode;
+  constructor(code: PlacesErrorCode, message: string) {
+    super(message);
+    this.name = 'PlacesError';
+    this.code = code;
+  }
+}
+
+export const PLACES_TIMEOUT_MS = 15000;
+const PLACES_CACHE_LIMIT = 100;
+const placesCache = new Map<string, PlaceSuggestion[]>();
+export const clearPlacesCache = () => placesCache.clear();
+
+// One stop search with a timeout. Answers are cached per query (typing, then deleting, a letter asks only once).
+// Throws AbortError when `signal` aborts, PlacesError when the server cannot answer.
+export async function fetchPlaces(query: string, signal?: AbortSignal, { timeoutMs = PLACES_TIMEOUT_MS }: { timeoutMs?: number } = {}): Promise<PlaceSuggestion[]> {
+  const key = query.trim().toLowerCase();
+  const hit = placesCache.get(key);
+  if (hit) return hit;
+
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  const forwardAbort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  signal?.addEventListener('abort', forwardAbort);
+  let response: Response;
+  try {
+    response = await fetch(`/api/v2/places?${new URLSearchParams({ query, limit: '8' }).toString()}`, { signal: controller.signal });
+  } catch (error) {
+    if (timedOut) throw new PlacesError('TIMEOUT', 'The stop search took too long to answer.');
+    if ((error as Error).name === 'AbortError') throw error;
+    throw new PlacesError('OFFLINE', 'The stop search could not be reached.');
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', forwardAbort);
+  }
+  if (response.status === 400) return [];
+  if (!response.ok) throw new PlacesError('UNAVAILABLE', response.status === 503 ? 'The timetable is still loading on the server.' : 'The stop search failed on the server.');
   const body = await readJson(response);
-  return Array.isArray(body?.places) ? body.places : [];
+  if (!Array.isArray(body?.places)) throw new PlacesError('UNAVAILABLE', 'The stop search returned an unexpected answer.');
+  const places: PlaceSuggestion[] = body.places;
+  if (placesCache.size >= PLACES_CACHE_LIMIT) placesCache.delete(placesCache.keys().next().value as string);
+  placesCache.set(key, places);
+  return places;
+}
+
+// Lenient form for callers that only need "a match or nothing" (failures read as no match; aborts still throw).
+export async function searchPlaces(query: string, signal?: AbortSignal): Promise<PlaceSuggestion[]> {
+  try {
+    return await fetchPlaces(query, signal);
+  } catch (error) {
+    if (error instanceof PlacesError) return [];
+    throw error;
+  }
+}
+
+// The hosted backend sleeps after inactivity (Render free tier) and takes up to about a minute to wake. Nudging it once
+// when the search form appears means it is usually awake by the time someone has typed a place name.
+let warmedUp = false;
+export function warmUpServer(): void {
+  if (warmedUp) return;
+  warmedUp = true;
+  fetch('/api/health').catch(() => { /* nothing to do: the real requests report their own failures */ });
 }

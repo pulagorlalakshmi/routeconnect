@@ -25,6 +25,9 @@ export function getRailNetworkConfig(env = process.env) {
     dir,
     rawPath: path.join(dir, 'osm-railways.raw.json'),
     graphPath: path.join(dir, 'rail-network.json'),
+    // A versioned, gzipped copy of the built graph shipped with the code (ODbL, see seed/README.md). Hosts with an
+    // ephemeral disk (Render free tier) install it at start-up instead of querying Overpass on every boot.
+    seedPath: resolvePath(env.ROUTECONNECT_RAIL_NETWORK_SEED_PATH, path.join(TRANSIT_ROOT, 'railNetwork', 'seed', 'rail-network.json.gz')),
     overpassUrl: env.ROUTECONNECT_OVERPASS_URL || 'https://overpass-api.de/api/interpreter',
     regions: (env.ROUTECONNECT_RAIL_NETWORK_REGIONS || DEFAULT_REGIONS.join(',')).split(',').map(s => s.trim()).filter(Boolean),
     // Snapshots older than this are reported as needing a refresh (infrastructure changes slowly).

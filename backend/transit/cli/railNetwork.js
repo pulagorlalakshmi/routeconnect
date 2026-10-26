@@ -3,7 +3,8 @@
 //   npm run rail:network:extract   ONE Overpass request for the configured regions (default: Andhra Pradesh, Telangana)
 //   npm run rail:network:build     raw extract -> routable graph (rail-network.json); no network access
 //   npm run rail:network:update    extract + build (run every few months; infrastructure changes slowly)
-//   npm run rail:network:ensure    deploy builds: build if missing; extract only if there is no raw extract yet
+//   npm run rail:network:ensure    deploy builds: build if missing; install the shipped seed, or extract only if neither exists
+//   npm run rail:network:seed      write the current graph to the shipped seed (commit it after a rail:network:update)
 //   npm run rail:network:status    coverage, components, attribution
 //   npm run rail:network:route -- --from-lat 16.50 --from-lon 80.65 --to-lat 17.39 --to-lon 78.47
 import '../../env.js';
@@ -12,7 +13,7 @@ import { parseArgs } from './common.js';
 import { getRailNetworkConfig } from '../railNetwork/railNetworkConfig.js';
 import { extractRailways } from '../railNetwork/overpassExtract.js';
 import { handleRailExplorerRequest, railNetworkStatus } from '../railNetwork/railExplorer.js';
-import { buildRailNetworkFromRaw, ensureRailNetwork } from '../railNetwork/railNetworkData.js';
+import { buildRailNetworkFromRaw, ensureRailNetwork, writeRailNetworkSeed } from '../railNetwork/railNetworkData.js';
 
 const command = process.argv[2];
 const args = parseArgs(process.argv.slice(3));
@@ -33,8 +34,13 @@ async function main() {
   if (command === 'build' || command === 'update') return build();
   if (command === 'ensure') {
     const result = await ensureRailNetwork(config, { allowExtract: true });
-    console.log(result.ready ? `Railway network ready${result.built ? ' (built now)' : ''}.` : `Railway network not prepared: ${result.reason}${result.error ? ` (${result.error})` : ''}.`);
+    console.log(result.ready ? `Railway network ready${result.built ? ' (built now)' : result.seeded ? ' (installed from the shipped seed)' : ''}.` : `Railway network not prepared: ${result.reason}${result.error ? ` (${result.error})` : ''}.`);
     if (!result.ready && result.reason === 'error') process.exitCode = 1;
+    return;
+  }
+  if (command === 'seed') {
+    const bytes = writeRailNetworkSeed(config);
+    console.log(`Seed written: ${config.seedPath} (${Math.round(bytes / 1024)} KB). Data © OpenStreetMap contributors, ODbL.`);
     return;
   }
   if (command === 'status') {
@@ -48,7 +54,7 @@ async function main() {
     console.log(status, JSON.stringify({ ...body, connections: (body.connections ?? []).map(({ geometry, intermediateStations, ...c }) => ({ ...c, geometryPoints: geometry.length, intermediateStations: intermediateStations.map(s => s.code ?? s.name) })) }, null, 2));
     return;
   }
-  console.log('Usage: node backend/transit/cli/railNetwork.js <extract|build|update|ensure|status|route>');
+  console.log('Usage: node backend/transit/cli/railNetwork.js <extract|build|update|ensure|seed|status|route>');
   process.exitCode = 1;
 }
 

@@ -7,14 +7,15 @@
 // station pair and date. Only trains RailRadar returns for the searched date are
 // used: numbers, names, stations, scheduled times and running days come from the response; nothing is invented.
 // Not used: live running status, fares, seats. Station coordinates (for walking / local-ride access) come from the
-// OpenStreetMap railway network (ODbL) that RouteConnect already holds.
+// OpenStreetMap railway network (ODbL) that RouteConnect already holds: the built graph, or the seed shipped with the
+// code, so scheduled trains work even when the Estimated Rail explorer is off or failed to prepare (railStations.js).
 import { haversineMeters } from '../../routing/geo.js';
 import { estimateLocalRide, estimateWalk } from '../../routing/accessEgress.js';
 import { getRoutingConfig } from '../../routing/config.js';
 import { dayNumberToIso, formatLocalDateTime, isoToDayNumber, weekdayIndex } from '../../routing/serviceCalendar.js';
 import { COMPOSE_DEFAULTS } from '../../multimodal/compose.js';
 import { createRailRadarClient } from '../../rail/verification/railRadar.js';
-import { getRailGraph } from '../../railNetwork/railExplorer.js';
+import { getRailStations } from '../../railNetwork/railStations.js';
 import { paretoRail } from '../../rail/railSearch.js';
 import { operatorIdentity } from '../operators.js';
 
@@ -144,7 +145,7 @@ export function trainsToTrunks(trains, { ctx, searchDate, stations, anchors, acc
     });
 }
 
-export function createRailRadarSource({ env = process.env, client = createRailRadarClient({ env }), getGraph = () => getRailGraph() } = {}) {
+export function createRailRadarSource({ env = process.env, client = createRailRadarClient({ env }), getGraph = () => getRailStations() } = {}) {
   return {
     id: 'rail',
     label: 'RailRadar scheduled trains',
@@ -158,7 +159,7 @@ export function createRailRadarSource({ env = process.env, client = createRailRa
       if (!access.available) return { configured: false, code: access.code, reason: access.reason };
       let graph = null;
       try { graph = getGraph(); } catch { graph = null; }
-      if (!graph) return { configured: false, reason: 'Station locations are not ready yet (railway network still preparing).' };
+      if (!graph?.stations) return { configured: false, reason: 'Railway station locations are not available on this server.' };
       if (ctx.crowFliesMeters < MIN_TRIP_METERS) return { configured: true, applicable: false, reason: 'Too short for a train journey.' };
       return { configured: true };
     },
