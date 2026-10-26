@@ -56,7 +56,7 @@ export default function JourneyTimeline({
     if (from && from.trim() && !/^origin$/i.test(from.trim())) return from.trim();
     if (corridor?.from && !/^origin$/i.test(corridor.from.trim())) return corridor.from;
     const firstLeg = journey.legs?.[0];
-    const raw = isTransitLeg(firstLeg) ? firstLeg.fromStop?.name : firstLeg?.from?.name;
+    const raw = firstLeg && isTransitLeg(firstLeg) ? firstLeg.fromStop?.name : firstLeg?.from?.name;
     if (raw && !/^origin$/i.test(raw.trim())) return raw;
     return from || 'From';
   }, [corridor?.from, journey.legs, from]);
@@ -65,7 +65,7 @@ export default function JourneyTimeline({
     if (to && to.trim() && !/^destination$/i.test(to.trim())) return to.trim();
     if (corridor?.to && !/^destination$/i.test(corridor.to.trim())) return corridor.to;
     const lastLeg = journey.legs?.at(-1);
-    const raw = isTransitLeg(lastLeg) ? (lastLeg as TransitLeg).toStop?.name : lastLeg?.to?.name;
+    const raw = lastLeg && isTransitLeg(lastLeg) ? lastLeg.toStop?.name : lastLeg?.to?.name;
     if (raw && !/^destination$/i.test(raw.trim())) return raw;
     return to || 'To';
   }, [corridor?.to, journey.legs, to]);
