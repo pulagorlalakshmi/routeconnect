@@ -85,8 +85,9 @@ describe('scheduled trains do not depend on the explorer', () => {
   test('station locations come from the seed when no graph has been built (explorer off or failed)', () => {
     const config = tempConfig({ env: { ROUTECONNECT_RAIL_NETWORK_ENABLED: 'false' } });
     const found = getRailStations(config);
-    assert.equal(found.from, 'seed');
-    assert.deepEqual(found.stations.map(s => s.code), ['TSA', 'TSB']);
+    assert.match(found.from, /^seed/);
+    // The seed's stations are kept (the nationwide station reference is merged in alongside them).
+    for (const code of ['TSA', 'TSB']) assert.ok(found.byCode.has(code), code);
   });
 
   test('RailRadar is configured with seed stations although the graph is missing', () => {

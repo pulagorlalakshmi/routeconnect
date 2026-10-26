@@ -109,9 +109,24 @@ export function isSameRoute(a: Journey, b: Journey): boolean {
   return computeRouteSignature(a) === computeRouteSignature(b);
 }
 
+// Approximate journey distance. Walk / ride legs carry their own estimate; a train leg uses the distance its timetable
+// source reports, otherwise (and for a bus leg without one) the straight line between its stops. Never 0 for a vehicle
+// leg merely because no distance was supplied (a 430 km train trip is not "12 km").
+const straightMeters = (a: { lat?: number; lon?: number } | undefined, b: { lat?: number; lon?: number } | undefined): number => {
+  if (!a || !b || typeof a.lat !== 'number' || typeof a.lon !== 'number' || typeof b.lat !== 'number' || typeof b.lon !== 'number') return 0;
+  const r = Math.PI / 180;
+  const h = Math.sin(((b.lat - a.lat) * r) / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(((b.lon - a.lon) * r) / 2) ** 2;
+  return 12742000 * Math.asin(Math.sqrt(h));
+};
 export function getRouteDistanceMeters(journey: Journey): number {
   if (!journey || !Array.isArray(journey.legs)) return 0;
-  const legsDist = journey.legs.reduce((sum, leg) => sum + (leg.distanceMeters ?? 0), 0);
+  const legsDist = journey.legs.reduce((sum, leg) => {
+    if (typeof leg.distanceMeters === 'number' && leg.distanceMeters > 0) return sum + leg.distanceMeters;
+    if (!isTransitLeg(leg)) return sum;
+    const reportedKm = (leg as TransitLeg & { scheduleEvidence?: { distanceKm?: number | null } | null }).scheduleEvidence?.distanceKm;
+    if (typeof reportedKm === 'number' && reportedKm > 0) return sum + reportedKm * 1000;
+    return sum + straightMeters(leg.fromStop, leg.toStop);
+  }, 0);
   return Math.round(legsDist);
 }
 

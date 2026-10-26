@@ -41,6 +41,7 @@ const trainsAvailable = (train: TrainCapability): Section => ({
   points: [
     <><strong>Timetable snapshot</strong>: Times from {train.sourceName ?? 'community rail data'}{train.snapshotDate ? <> ({train.snapshotDate})</> : ''}; not live running status.</>,
     <><strong>Confirm before travelling</strong>: Always verify departures on official Indian Railways enquiry services (NTES, 139 or IRCTC).</>,
+    <><strong>Stations across India</strong>: Station locations and codes from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer" className="font-bold text-[#146B5B] underline">© OpenStreetMap contributors</a> (ODbL); they say where stations are, not which trains run.</>,
     <><strong>No fabricated trains</strong>: No train number, name, time or fare is ever generated.</>
   ]
 });

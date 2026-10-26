@@ -28,6 +28,9 @@
     "rail:network:update": "node backend/transit/cli/railNetwork.js update",
     "rail:network:ensure": "node backend/transit/cli/railNetwork.js ensure",
     "rail:network:seed": "node backend/transit/cli/railNetwork.js seed",
+    "rail:stations:update": "node backend/transit/cli/stations.js update",
+    "rail:stations:status": "node backend/transit/cli/stations.js status",
+    "rail:coverage": "node backend/transit/eval/runCoverage.js",
     "rail:network:status": "node backend/transit/cli/railNetwork.js status",
     "rail:network:route": "node backend/transit/cli/railNetwork.js route",
     "server:watch": "node --watch backend/server.js"

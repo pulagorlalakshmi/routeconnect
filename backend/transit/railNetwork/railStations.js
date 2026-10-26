@@ -12,6 +12,7 @@ import { haversineMeters } from '../routing/geo.js';
 import { getRailNetworkConfig } from './railNetworkConfig.js';
 import { getRailGraph } from './railExplorer.js';
 import { readRailNetworkSeed } from './railNetworkData.js';
+import { createSpatialIndex, getStationIndex, stationImportance } from './stationReference.js';
 
 export const TRACK_RADIUS_METERS = 1500;
 // Track length at which a station counts as fully "major" (Vijayawada, Visakhapatnam, Secunderabad have 20-25 km).
@@ -52,15 +53,48 @@ export function trackKmByStation(graph) {
   return out;
 }
 
-function stationSet(graph, from) {
-  const trackKm = trackKmByStation(graph);
+// Trains seen per station in timetable answers (this process): the busiest single answer that included the station.
+// Evidence from the provider itself, so a terminal that turned out to be busy ranks higher next time.
+const seenTrains = new Map();
+export function recordTimetableEvidence(trains) {
+  const counts = new Map();
+  for (const t of trains ?? []) for (const code of [t.from?.code, t.to?.code]) if (code) counts.set(code, (counts.get(code) ?? 0) + 1);
+  for (const [code, n] of counts) if (n > (seenTrains.get(code) ?? 0)) seenTrains.set(code, n);
+}
+export const trainsSeenAt = code => seenTrains.get(code) ?? 0;
+export function clearTimetableEvidence() { seenTrains.clear(); }
+
+// The stations RailRadar can be asked about: the NATIONWIDE reference (stationReference.js, all of India), plus any
+// station of the regional railway graph whose code the reference lacks. The regional graph only adds its track-based
+// size signal (Andhra Pradesh / Telangana); it never limits where trains are searched.
+function stationSet(graph, from, national = getStationIndex()) {
+  const trackKm = graph ? trackKmByStation(graph) : new Map();
+  const merged = new Map();
+  for (const s of national?.stations ?? []) merged.set(s.code, s);
+  for (const s of graph?.stations ?? []) {
+    if (s.code && !merged.has(s.code)) merged.set(s.code, { code: s.code, name: s.name, aliases: [], kind: s.kind, lat: s.lat, lon: s.lon, wikidata: false });
+  }
+  const stations = [...merged.values()];
+  const spatial = createSpatialIndex(stations);
+  const regional = station => 0.65 * Math.min(1, (trackKm.get(station?.code) ?? MAJOR_TRACK_KM * 0.3) / MAJOR_TRACK_KM)
+    + (/junction|\bjn\b/i.test(station?.name ?? '') ? 0.35 : 0);
   return {
-    stations: graph.stations,
-    from,
+    stations,
+    from: national ? `${from}+nationwide` : from,
+    coverage: national ? { stations: stations.length, source: national.meta?.source ?? null, osmBaseTimestamp: national.meta?.osmBaseTimestamp ?? null } : { stations: stations.length, source: 'regional railway graph' },
     trackKm,
-    // 0..1: how large an interchange a station is (see above). Unknown stations get a neutral track share.
-    importanceOf: station => 0.65 * Math.min(1, (trackKm.get(station?.code) ?? MAJOR_TRACK_KM * 0.3) / MAJOR_TRACK_KM)
-      + (/junction|\bjn\b/i.test(station?.name ?? '') ? 0.35 : 0)
+    nearby: spatial.nearby,
+    // A multi-terminal city: an OpenStreetMap place=city within `meters` and at least `minStations` stations around it.
+    isCity: (point, meters = 10000, minStations = 3) => Boolean(national?.placesNearby?.(point.lat, point.lon, meters).some(e => e.station.type === 'city'))
+      && spatial.nearby(point.lat, point.lon, meters).filter(e => e.station.kind === 'station').length >= minStations,
+    byCode: new Map(stations.map(s => [s.code, s])),
+    // 0..1: how large an interchange a station is. With mapped track (AP / TS) the original track + junction measure;
+    // elsewhere explainable reference signals (stationReference.js). Trains already seen at it raise it either way.
+    importanceOf: station => {
+      const seen = trainsSeenAt(station?.code);
+      if (trackKm.has(station?.code)) return Math.max(regional(station), Math.min(1, seen / 20) * 0.6);
+      return stationImportance(station, { seenTrains: seen });
+    }
   };
 }
 

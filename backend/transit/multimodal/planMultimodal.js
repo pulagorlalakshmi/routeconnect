@@ -30,6 +30,9 @@ import { createBusFeeder } from './busFeeder.js';
 import { buildShortlist } from './shortlist.js';
 import { journeyAllowed, parsePreferences, transportModeOf } from './preferences.js';
 import { attachCandidateDepartures, groupJourneysByRoute } from '../routing/routeGrouping.js';
+import { resolvePlace } from '../routing/placeSearch.js';
+import { resolveNationalPlace } from '../routing/nationalPlaces.js';
+import { busStopsNear } from './railHubs.js';
 
 // The bus planner returns more candidates than before so the shortlist has something to diversify.
 export const GTFS_CANDIDATE_POOL = 30;
@@ -62,7 +65,8 @@ export async function handleMultimodalPlanRequest(rawQuery, {
   getNetwork = () => getTransitNetwork(),
   sources = defaultSources(),
   fareConfig = getFareConfig(),
-  maxTransfersMixed = maxMixedTransfers()
+  maxTransfersMixed = maxMixedTransfers(),
+  resolveNational = resolveNationalPlace
 } = {}) {
   const started = performance.now();
 
@@ -97,6 +101,11 @@ export async function handleMultimodalPlanRequest(rawQuery, {
   }
   const modeAllowed = mode => preferences.modes.length === 0 || preferences.modes.includes(transportModeOf(mode));
 
+  // 0b. A typed place that is not a bus stop (Mumbai, a railway station code...) is resolved to coordinates from the
+  //     nationwide reference, so trains are still searched; the bus planner then simply finds no bus there.
+  const national = resolveOutsideBusDataset(rawQuery ?? {}, getNetwork, resolveNational);
+  rawQuery = national.raw;
+
   // 1. Buses (and place resolution) via the existing RAPTOR planner. The network is loaded with the default config
   //    (one shared cache entry); only the candidate pool size differs.
   const busConfig = { ...config, ranking: { ...config.ranking, maxJourneys: GTFS_CANDIDATE_POOL } };
@@ -112,7 +121,7 @@ export async function handleMultimodalPlanRequest(rawQuery, {
   // Input problems (bad query, unknown place) are returned as before: there is nothing to search.
   if (gtfs.status === 400 || gtfs.status === 404) return gtfs;
 
-  const body = gtfs.status === 200 ? gtfs.body : null;
+  const body = gtfs.status === 200 ? { ...gtfs.body, resolved: { ...(gtfs.body.resolved ?? {}), ...national.resolved } } : null;
   const q = body?.query ?? coordinatesFrom(rawQuery);
   const sourceReport = [{
     id: 'gtfs', label: body?.dataset?.name ? `${body.dataset.name}` : 'GTFS timetable', mode: 'bus',
@@ -198,7 +207,8 @@ export async function handleMultimodalPlanRequest(rawQuery, {
   if (gtfs.status !== 200) warnings.push({ code: 'BUS_SOURCE_UNAVAILABLE', severity: 'warning', message: 'Bus timetable search failed; other transport sources were still searched.' });
   warnings.push(...railWarnings(results.get('rail')?.meta, shortlist.journeys));
   const railReport = sourceReport.find(source => source.id === 'rail') ?? null;
-  const searchCoverage = describeCoverage({ journeys: shortlist.journeys, candidates, railReport, railMeta: results.get('rail')?.meta, windowMinutes, modes: preferences.modes });
+  const busCoverage = network ? { origin: busStopsNear(network, ctx.origin), destination: busStopsNear(network, ctx.destination) } : null;
+  const searchCoverage = describeCoverage({ journeys: shortlist.journeys, candidates, railReport, railMeta: results.get('rail')?.meta, windowMinutes, modes: preferences.modes, busCoverage });
   warnings.push(...coverageWarnings(searchCoverage));
   return {
     status: shortlist.journeys.length > 0 || gtfs.status === 200 ? 200 : gtfs.status,
@@ -249,6 +259,29 @@ export function railWarnings(meta, journeys) {
   return warnings;
 }
 
+// Names the bus timetable does not know -> coordinates from the nationwide station / place reference.
+// A name the bus timetable resolves (whole-word) is left to it. Returns the query to plan with and what was resolved.
+export function resolveOutsideBusDataset(raw, getNetwork, resolveNational) {
+  const out = { ...raw };
+  const resolved = {};
+  let network = null;
+  try { network = getNetwork(); } catch { network = null; }
+  for (const [end, latKey, lngKey] of [['from', 'fromLat', 'fromLng'], ['to', 'toLat', 'toLng']]) {
+    const text = typeof raw[end] === 'string' ? raw[end].trim() : '';
+    if (!text || raw[latKey] !== undefined || raw[lngKey] !== undefined) continue;
+    // An official station code typed in capitals ("MAS", "NDLS") means that station, not a bus stop that starts with it.
+    const typedCode = /^[A-Z]{2,5}$/.test(text);
+    const place = resolveNational ? resolveNational(text) : null;
+    if (!(typedCode && place?.code === text) && network && resolvePlace(network, text)) continue;
+    if (!place) continue;
+    out[latKey] = String(place.lat);
+    out[lngKey] = String(place.lon);
+    out[end] = place.name;
+    resolved[end] = { query: text, name: place.name, lat: place.lat, lon: place.lon, matchedBy: place.matchedBy, kind: place.kind, code: place.code ?? null, source: 'openstreetmap' };
+  }
+  return { raw: out, resolved };
+}
+
 // Best arrival among the bus journeys, in seconds from 00:00 of the search date (the rail source's time base).
 export function bestArrivalSeconds(journeys, date, utcOffset) {
   if (!date || journeys.length === 0) return null;
@@ -272,7 +305,7 @@ export function journeyKind(journey) {
  * how many bus-only, train-only and bus + train journeys exist, whether the railway search ran, failed, or was limited
  * (by the per-search request cap, the monthly allowance or time), and how much of it was asked.
  */
-export function describeCoverage({ journeys, candidates, railReport, railMeta, windowMinutes, modes = [] }) {
+export function describeCoverage({ journeys, candidates, railReport, railMeta, windowMinutes, modes = [], busCoverage = null }) {
   const count = list => list.reduce((acc, journey) => { acc[journeyKind(journey)]++; return acc; }, { direct_bus: 0, direct_train: 0, mixed: 0, other: 0 });
   const shown = count(journeys);
   const all = count(candidates);
@@ -289,8 +322,14 @@ export function describeCoverage({ journeys, candidates, railReport, railMeta, w
       pairsChecked: rail?.pairs?.length ?? 0,
       pairsSkipped: rail ? rail.skipped.budget + rail.skipped.time : 0,
       requests: rail?.requests ?? null,
-      hubSearch: rail?.hubSearch ?? null
-    }
+      hubSearch: rail?.hubSearch ?? null,
+      // Railway station near each end: ok | expanded (only a farther one) | none (no station in the reference data).
+      stations: rail?.stations ?? null,
+      trainsReturned: rail ? rail.pairs.reduce((n, p) => n + (p.trains ?? 0), 0) : null,
+      quotaLow: Boolean(rail?.quotaLow)
+    },
+    // Is each end inside the bus timetable (APSRTC GTFS) at all?
+    bus: busCoverage
   };
 }
 
@@ -321,25 +360,37 @@ export function noJourneyMessage(coverage, fallback) {
   const trainOnly = coverage.modes?.length === 1 && coverage.modes[0] === 'train';
   const busOnly = coverage.modes?.length === 1 && coverage.modes[0] === 'bus';
   const what = trainOnly ? 'scheduled train (with walking or local-ride connections)' : 'direct or bus + train journey';
-  if (busOnly) return fallback ?? 'No journey was found.';
+  const outsideBus = coverage.bus && (!coverage.bus.origin || !coverage.bus.destination);
+  const busNote = outsideBus ? ' Bus timetables are only available for APSRTC (Andhra Pradesh) services, so buses could not be checked for this trip.' : '';
+  if (busOnly) return outsideBus ? 'Bus timetables are only available for APSRTC (Andhra Pradesh) services, and this trip is outside them.' : (fallback ?? 'No journey was found.');
   if (rail.status === 'ok' && rail.limitedBy && rail.limitedBy !== 'provider_error' && rail.pairsSkipped > 0) {
-    return `No ${what} was found among the connections checked ${window}. The train search was limited, so this does not prove there is no route: try again later, or a different time.`;
+    return rail.limitedBy === 'quota'
+      ? `No ${what} was found among the connections checked ${window}. The monthly railway data allowance is nearly used up, so only part of the train search could run: this does not prove there is no route.${busNote}`
+      : `No ${what} was found among the connections checked ${window}. The train search was limited, so this does not prove there is no route: try again later, or a different time.${busNote}`;
+  }
+  const noStation = rail.stations && Object.entries(rail.stations).filter(([, state]) => state === 'none').map(([end]) => end);
+  if (noStation?.length) {
+    return `There is no railway station near your ${noStation.join(' or ')} in the station data RouteConnect uses, so trains could not be searched.${busNote}`;
+  }
+  if (rail.status === 'ok' && rail.pairsChecked > 0 && rail.trainsReturned === 0) {
+    return `No trains were found between the stations checked for this date.${busNote}`;
   }
   if (rail.status === 'error' || rail.status === 'timeout') {
     return trainOnly
       ? 'Scheduled trains could not be checked right now (the railway data service did not answer). Please try again shortly.'
       : `No bus journey was found ${window}, and scheduled trains could not be checked right now (the railway data service did not answer).`;
   }
-  if (rail.status === 'ok') return trainOnly ? `No ${what} was found ${window}.` : `No direct bus, direct train or bus + train journey was found ${window}.`;
+  if (rail.status === 'ok') return trainOnly ? `No ${what} was found ${window}.` : `No direct bus, direct train or bus + train journey was found ${window}.${busNote}`;
   return fallback ?? 'No journey was found.';
 }
 
 // The coverage report as sent to the browser: what was asked and why searching stopped (no keys, no internals).
 export function publicRailCoverage(coverage) {
-  const { pairs, requests, skipped, hubSearch, hubs, via, limitedBy, quotaLow, elapsedMs } = coverage;
+  const { pairs, requests, skipped, hubSearch, hubs, via, limitedBy, quotaLow, quotaLimited, elapsedMs, stations, cityTerminals, busCoverage } = coverage;
   return {
-    pairs: pairs.map(({ from, to, date, role, cost, trains, inWindow, error }) => ({ from, to, date, role, cost, trains: trains ?? null, inWindow: inWindow ?? null, error: error ?? null })),
-    requests, skipped, hubSearch, hubs, via, limitedBy, quotaLow, elapsedMs
+    pairs: pairs.map(({ from, to, date, role, cost, trains, inWindow, error, byCity }) => ({ from, to, date, role, cost, byCity: Boolean(byCity), trains: trains ?? null, inWindow: inWindow ?? null, error: error ?? null })),
+    requests, skipped, hubSearch, hubs, via, limitedBy, quotaLow: Boolean(quotaLow), quotaLimited: Boolean(quotaLimited), elapsedMs,
+    stations: stations ?? null, cityTerminals: cityTerminals ?? null, busCoverage: busCoverage ?? null
   };
 }
 

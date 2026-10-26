@@ -318,7 +318,11 @@ export interface SearchCoverage {
     pairsSkipped: number;
     requests: { made: number; cached: number; shared: number; allowed: number } | null;
     hubSearch: 'searched' | 'not_needed' | 'no_candidates' | 'not_applicable' | null;
+    stations: { origin?: 'ok' | 'expanded' | 'none'; destination?: 'ok' | 'expanded' | 'none' } | null;
+    trainsReturned: number | null;
+    quotaLow: boolean;
   };
+  bus: { origin: boolean; destination: boolean } | null;
 }
 
 export interface PlaceSuggestion {
@@ -329,6 +333,10 @@ export interface PlaceSuggestion {
   stopCount: number;
   services: number;
   matchedBy: string;
+  // bus_stop: a place in the bus timetable; city / town / station: from the nationwide station and place reference
+  // (coordinates only; trains are searched from stations near it, buses only where the bus timetable reaches).
+  kind?: 'bus_stop' | 'city' | 'town' | 'station';
+  code?: string | null;
 }
 
 export type PlanErrorCode = 'PLACE_NOT_FOUND' | 'INVALID_QUERY' | 'DATA_UNAVAILABLE' | 'MODE_UNAVAILABLE' | 'OFFLINE' | 'TIMEOUT' | 'SERVER_ERROR';

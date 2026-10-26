@@ -85,8 +85,20 @@ npm run rail:search -- --from BZA --to SC --date 2026-10-20 --time 06:00 [--wind
 Scheduled trains are combined with timetable buses into door-to-door journeys (Bus → Train, Train → Bus,
 Bus → Train → Bus, and Train → Train / Train → Bus → Train when the budget allows):
 
-1. **Anchor pair** - the main station near each end (direct trains): one RailRadar request, cached 6 h.
-2. **Transfer hubs** (`multimodal/railHubs.js`) - only when the anchor has too few trains in the window, or a hub promises
+Stations come from the **nationwide** reference (`railNetwork/seed/india-stations.json.gz`, OpenStreetMap, ~9,200
+stations), searched with a spatial index; the Andhra Pradesh / Telangana railway graph only adds a track-based station
+size signal there. Typed places outside the bus timetable (Mumbai, "MAS") resolve to coordinates from the same reference.
+
+1. **Stage A - anchor pair**: the main station near each end (the largest within 8 km, preferring the station named
+   after the place: Chennai Central, Hyderabad Deccan). In a multi-terminal city (OSM `place=city` + 3 stations within
+   10 km) whose anchor is not clearly its main station, the first question is RailRadar's documented `byCity=true`
+   (every station of both cities in one request). One request, cached 6 h. No station within 40 km: one look to 60 km
+   on long trips, reported as `stations.origin|destination = expanded|none`.
+   **Stage B - other terminals**: when the plain anchor question was not enough, ONE `byCity` question.
+   **Stage D - two trains**: when no direct train exists, a change at a large junction / city station (both legs `byCity`
+   in a city, so the change may be between two of its stations; the connection is validated in compose.js). Tried
+   before Stage C when neither end is inside the bus timetable.
+2. **Stage C - transfer hubs** (`multimodal/railHubs.js`) - only when the anchor has too few trains in the window, or a hub promises
    an arrival at least 45 min earlier. Candidates are large stations (mapped track + "Junction") with a bus stand
    nearby; origin-side hubs must be reachable by timetable bus (one RAPTOR run, real arrival times). Pairs that cannot
    come close to the best bus, or are another terminal in the same two towns while the anchor has trains, are not asked.
@@ -100,8 +112,9 @@ Request budget (RailRadar free tier ≈ 100 requests/month per key):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `RAILRADAR_MAX_REQUESTS_PER_SEARCH` | `3` | new (uncached) requests one search may make; `1` = direct trains only |
+| `RAILRADAR_MAX_REQUESTS_PER_SEARCH` | `4` | new (uncached) requests one search may make; never more than a tenth of what is left this month; `1` = direct trains only |
 | `RAILRADAR_MONTHLY_REQUEST_BUDGET` | `100` | per credential; at ≤ 20 left, searches ask about direct trains only |
+| `ROUTECONNECT_RAIL_CITY_SEARCH` | on | `false` disables `byCity` questions for multi-terminal cities |
 | `RAILRADAR_CACHE_TTL_HOURS` | `6` | how long a station-pair answer is reused |
 | `ROUTECONNECT_RAIL_HUB_SEARCH` | on | `false` disables transfer hubs |
 | `ROUTECONNECT_MULTIMODAL_MAX_TRANSFERS` | `2` | most public-transport changes in a bus + train journey |
@@ -116,3 +129,10 @@ pays its requests again.
 
 Not implemented. With source-backed trains available it would add risk (look-alike results) for little planning value.
 If trains are switched off, train search stays transparently unavailable rather than showing assumed paths.
+
+## Coverage regression
+
+`npm run rail:coverage` runs 111 origin-destination pairs across India through the planner against a SYNTHETIC
+timetable (`backend/transit/eval/railFixture.js`: real station codes and corridors, fake trains) and reports discovery,
+false "no train" answers, validity of every train leg, terminal choice, requests per search and latency. Add
+`--root <checkout>` to run another version of the planner on the same inputs. It never calls RailRadar.

@@ -24,7 +24,7 @@ export const SUGGESTION_MESSAGES: Record<Exclude<SuggestionsStatus, 'idle'>, str
   loading: 'Searching stops…',
   waking: 'Waking up the route server… the first search after a quiet spell can take up to a minute.',
   error: 'The stop search is not responding right now. Please try again in a moment.',
-  empty: 'No matching stop in the transit timetable.'
+  empty: 'No matching place, bus stop or railway station.'
 };
 export const SUGGESTIONS_DEBOUNCE_MS = 250;
 // After this long without an answer the server is probably waking up from sleep: say so.
@@ -32,10 +32,18 @@ export const SUGGESTIONS_SLOW_MS = 2500;
 // Retries while the server wakes (each attempt also has its own timeout, see fetchPlaces). Then give up and say so.
 export const SUGGESTIONS_RETRY_DELAYS_MS = [2000, 4000, 8000];
 
+// Bus-timetable places say how many stops and services they have; nationwide cities, towns and railway stations say
+// what they are (they come from the station / place reference, not the bus timetable).
+export function suggestionSubtitle(place: PlaceSuggestion): string {
+  if (place.kind === 'station') return `Railway station${place.code ? ` · ${place.code}` : ''}`;
+  if (place.kind === 'city' || place.kind === 'town') return `${place.kind === 'city' ? 'City' : 'Town'} · trains from nearby stations`;
+  return `${place.stopCount} stop${place.stopCount === 1 ? '' : 's'} · ${place.services} service${place.services === 1 ? '' : 's'}`;
+}
+
 const toSuggestion = (place: PlaceSuggestion): SuggestionItem => ({
   name: place.name,
-  type: 'bus',
-  subtitle: `${place.stopCount} stop${place.stopCount === 1 ? '' : 's'} · ${place.services} service${place.services === 1 ? '' : 's'}`,
+  type: place.kind === 'station' ? 'station' : place.kind === 'city' || place.kind === 'town' ? 'city' : 'bus',
+  subtitle: suggestionSubtitle(place),
   district: '',
   lat: place.lat,
   lon: place.lon

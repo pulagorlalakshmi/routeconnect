@@ -215,7 +215,7 @@ export default function JourneyCard({
   const corridor = routeInfo ? { from: routeInfo.origin, to: routeInfo.destination } : getRouteCorridor(activeJourney, from, to);
   const stopsInfo = routeInfo?.stopsSummary || getRouteStopsSummary(activeJourney);
   const distanceMeters = routeInfo?.totalDistanceMeters || getRouteDistanceMeters(activeJourney);
-  const distanceKm = distanceMeters > 0 ? `${(distanceMeters / 1000).toFixed(1)} km` : null;
+  const distanceKm = distanceMeters > 0 ? `≈ ${(distanceMeters / 1000).toFixed(distanceMeters >= 100000 ? 0 : 1)} km` : null;
 
   const handleSave = () => {
     const entry = {

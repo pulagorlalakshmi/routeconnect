@@ -19,6 +19,8 @@ import { handleMultimodalPlanRequest } from './transit/multimodal/planMultimodal
 import { getTransitNetwork, reloadTransitNetwork } from './transit/routing/dataLoader.js';
 import { getHubMetrics, getConnectivity } from './transit/routing/hubs.js';
 import { handlePlaceSearch } from './transit/routing/placeSearch.js';
+import { searchNationalPlaces } from './transit/routing/nationalPlaces.js';
+import { getRailStations } from './transit/railNetwork/railStations.js';
 import { getTransitConfig } from './transit/config.js';
 import { ensureTransitData } from './transit/ensureData.js';
 import { stripTrainRoutes, requestsTrainOnly, TRAIN_DATA_UNAVAILABLE } from './services/trainDataPolicy.js';
@@ -451,7 +453,7 @@ app.get('/api/v2/rail/verify', async (req, res) => {
 // Stop/place autocomplete for the GTFS planner: only places that exist in the timetable are suggested.
 app.get('/api/v2/places', async (req, res) => {
   await waitForTransitReady();
-  const { status, body } = handlePlaceSearch(req.query, () => getTransitNetwork());
+  const { status, body } = handlePlaceSearch(req.query, () => getTransitNetwork(), { national: searchNationalPlaces });
   return res.status(status).json(body);
 });
 
@@ -485,6 +487,16 @@ app.listen(PORT, "0.0.0.0", () => {
   // Bootstrap or warm the in-memory transit network
   bootstrapTransit();
   bootstrapRail();
+  // Nationwide railway stations and places (shipped seed, ~250 KB): loaded once in the background so the first search
+  // does not wait for it. Nothing is downloaded.
+  setImmediate(() => {
+    try {
+      const stations = getRailStations();
+      console.log(`[Stations] ${stations?.stations.length ?? 0} railway stations ready (${stations?.from ?? 'none'}).`);
+    } catch (error) {
+      console.warn('[Stations] Station reference could not be loaded:', error.message);
+    }
+  });
   // Estimated rail connections: prepare the network graph if it is missing (from the saved extract, the seed shipped
   // with the code, or ONE Overpass extract when neither exists). Scheduled trains (RailRadar) do not wait for this. Runs in the background; until it finishes the capability reports "preparing".
   ensureRailNetwork().then(result => {

@@ -11,7 +11,7 @@ import { createRailRadarSource } from '../../sources/rail/railRadarSource.js';
 const PRIMARY = 'rr_test_primary_0000000000000000000000';
 const BACKUP = 'rr_test_backup_11111111111111111111111';
 const listing = trains => ({ success: true, data: { trains }, meta: {} });
-const oneTrain = listing([{ train: { number: '90001', name: 'Test Express', runDays: ['mon'] }, from: { code: 'TSA', departure: '07:00', day: 1 }, to: { code: 'TSB', arrival: '07:50', day: 1 }, distance: 30, duration: 50, totalHaltsBetween: 1 }]);
+const oneTrain = listing([{ train: { number: '90001', name: 'Test Express', runDays: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] }, from: { code: 'TSA', departure: '07:00', day: 1 }, to: { code: 'TSB', arrival: '07:50', day: 1 }, distance: 30, duration: 50, totalHaltsBetween: 1 }]);
 
 // A fake RailRadar: answers per key, records which key each request used (as "primary"/"backup", never the value).
 // A behaviour may be a function of the call number for that key (to change answers over time), or throw (network failure).

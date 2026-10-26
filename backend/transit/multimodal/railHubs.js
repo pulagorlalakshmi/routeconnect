@@ -26,6 +26,8 @@ export const HUB_DEFAULTS = Object.freeze({
   hubRadiusShare: 0.6,           // hubs are looked for within this share of the trip distance of each end ...
   hubMaxRadiusMeters: 350000,    // ... and never farther than this
   maxDetourRatio: 1.35,          // (origin -> hub -> destination) / (origin -> destination)
+  maxViaDetourRatio: 1.5,        // the same for a junction where two trains meet (railway lines bend more than roads)
+  minViaImportance: 0.6,         // a station where two trains are changed must be a large one (railStations.js)
   stationBusRadiusMeters: 2500,  // GTFS stops this close to a station are its bus side (bus stand <-> station)
   minHubImportance: 0.5,         // a station beyond ride range must be at least this large (0..1, railStations.js)
   minBusSideStrength: 0.5,       // ... and have a bus side at least this strong (0..1, hubs.js)
@@ -105,6 +107,9 @@ export function busReachFrom(network, point, { date, timeSeconds, config, maxTra
   };
 }
 
+// Is the point inside the bus dataset (a served stop within local-ride range)?
+export const busStopsNear = (network, point, radiusMeters = 20000) => componentsNear(network, point, radiusMeters).size > 0;
+
 // Served GTFS stops around a point, as connectivity components (to judge whether buses can link a station and a place).
 function componentsNear(network, point, radiusMeters) {
   const { component } = getConnectivity(network);
@@ -122,25 +127,34 @@ function componentsNear(network, point, radiusMeters) {
  */
 const NEUTRAL_IMPORTANCE = () => 0.3;
 
-export function hubCandidates({ stations, point, other, role, network = null, reach = null, busAllowed = true, config, options = HUB_DEFAULTS, exclude = new Set(), importanceOf = NEUTRAL_IMPORTANCE }) {
+export function hubCandidates({ stations, nearby = null, point, other, role, network = null, reach = null, busAllowed = true, config, options = HUB_DEFAULTS, exclude = new Set(), importanceOf = NEUTRAL_IMPORTANCE }) {
   const crow = haversineMeters(point.lat, point.lon, other.lat, other.lon);
-  const radius = Math.min(options.hubMaxRadiusMeters, Math.max(options.maxRideMeters, options.hubRadiusShare * crow));
-  const placeComponents = network && role === 'destination' ? componentsNear(network, point, Math.max(...(config.feederStageRadiiMeters ?? [20000]))) : null;
+  const feederRadius = Math.max(...(config.feederStageRadiiMeters ?? [20000]));
+  const nearPlace = network ? componentsNear(network, point, feederRadius) : new Set();
+  // Hubs beyond ride range are only reachable by timetable bus: where the bus dataset has no stops near this end
+  // (outside its region), only stations within ride range are candidates. Bus coverage is never assumed.
+  const busHere = busAllowed && Boolean(network) && nearPlace.size > 0;
+  const radius = busHere ? Math.min(options.hubMaxRadiusMeters, Math.max(options.maxRideMeters, options.hubRadiusShare * crow)) : options.maxRideMeters;
+  const placeComponents = role === 'destination' ? nearPlace : null;
   const { component } = network ? getConnectivity(network) : { component: null };
   const seen = new Set();
   const out = [];
-  for (const station of stations) {
+  // The spatial index visits only nearby stations (never the whole country); a plain list is filtered by distance.
+  const inRange = nearby
+    ? nearby(point.lat, point.lon, radius).map(e => [e.station, e.meters])
+    : stations.map(s => [s, haversineMeters(point.lat, point.lon, s.lat, s.lon)]).filter(([, m]) => m <= radius);
+  for (const [station, meters] of inRange) {
     if (!station.code || seen.has(station.code) || exclude.has(station.code)) continue;
-    const meters = haversineMeters(point.lat, point.lon, station.lat, station.lon);
-    if (meters > radius) continue;
     const toOther = haversineMeters(station.lat, station.lon, other.lat, other.lon);
     if (crow > 0 && (meters + toOther) / crow > options.maxDetourRatio) continue;
     if (meters > 15000 && toOther >= crow) continue; // a far hub must make progress toward the other end
     const junction = isJunction(station);
     const importance = importanceOf(station);
+    // Beyond ride range only genuine interchanges: a large station (never a wayside halt) with a real bus side.
+    // The cheap checks come first; the bus side is looked up only for stations that pass them.
+    if (meters > options.maxRideMeters && (station.kind === 'halt' || importance < options.minHubImportance)) continue;
     const side = stationBusSide(network, station);
-    // Beyond ride range only genuine interchanges: a large station with a real bus side (never a wayside halt).
-    if (meters > options.maxRideMeters && (station.kind === 'halt' || importance < options.minHubImportance || side.strength < options.minBusSideStrength)) continue;
+    if (meters > options.maxRideMeters && side.strength < options.minBusSideStrength) continue;
 
     let via = null;
     let minutes = Infinity;
@@ -222,16 +236,21 @@ export function rankStationPairs({ anchor = null, origins, destinations, options
 }
 
 /** Junction stations between the two ends, for two-train itineraries (Train -> Train / Train -> Bus -> Train). */
-export function viaJunctions({ stations, origin, destination, exclude = new Set(), options = HUB_DEFAULTS, max = 2, importanceOf = NEUTRAL_IMPORTANCE }) {
+export function viaJunctions({ stations, nearby = null, origin, destination, exclude = new Set(), options = HUB_DEFAULTS, max = 2, importanceOf = NEUTRAL_IMPORTANCE }) {
   const crow = haversineMeters(origin.lat, origin.lon, destination.lat, destination.lon);
   const out = [];
-  for (const station of stations) {
-    if (!station.code || exclude.has(station.code) || !isJunction(station) || importanceOf(station) < options.minHubImportance) continue;
+  // Junctions within a 1.5 detour lie inside an ellipse around the midpoint: a midpoint radius of 0.75 x the trip covers it.
+  const mid = { lat: (origin.lat + destination.lat) / 2, lon: (origin.lon + destination.lon) / 2 };
+  const candidates = nearby ? nearby(mid.lat, mid.lon, crow * 0.75).map(e => e.station) : stations;
+  for (const station of candidates) {
+    // A junction, or a city's own main station: where lines meet and long-distance trains call.
+    if (!station.code || exclude.has(station.code) || station.kind === 'halt' || importanceOf(station) < options.minViaImportance) continue;
     const a = haversineMeters(origin.lat, origin.lon, station.lat, station.lon);
     const b = haversineMeters(station.lat, station.lon, destination.lat, destination.lon);
-    if (a < options.minRailMeters || b < options.minRailMeters || (a + b) / crow > 1.25) continue;
+    if (a < options.minRailMeters || b < options.minRailMeters || (a + b) / crow > options.maxViaDetourRatio) continue;
     const importance = importanceOf(station);
-    out.push({ station, detour: (a + b) / crow, importance, score: (a + b) / crow - 0.3 * importance });
+    // Station size first (a big junction slightly off the line beats a small one on it), then detour.
+    out.push({ station, detour: (a + b) / crow, importance, score: 0.5 * ((a + b) / crow - 1) - importance });
   }
   out.sort((x, y) => x.score - y.score || x.station.code.localeCompare(y.station.code));
   const chosen = [];

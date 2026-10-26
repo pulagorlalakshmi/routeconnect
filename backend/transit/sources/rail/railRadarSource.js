@@ -21,10 +21,10 @@ import { getRoutingConfig } from '../../routing/config.js';
 import { dayNumberToIso, formatLocalDateTime, isoToDayNumber, weekdayIndex } from '../../routing/serviceCalendar.js';
 import { COMPOSE_DEFAULTS } from '../../multimodal/compose.js';
 import { createRailRadarClient } from '../../rail/verification/railRadar.js';
-import { getRailStations } from '../../railNetwork/railStations.js';
+import { getRailStations, recordTimetableEvidence } from '../../railNetwork/railStations.js';
 import { paretoRail } from '../../rail/railSearch.js';
 import { operatorIdentity } from '../operators.js';
-import { busReachFrom, hubCandidates, rankStationPairs, viaJunctions, HUB_DEFAULTS } from '../../multimodal/railHubs.js';
+import { busReachFrom, busStopsNear, hubCandidates, rankStationPairs, viaJunctions, HUB_DEFAULTS } from '../../multimodal/railHubs.js';
 
 const DAY = 86400;
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -46,22 +46,40 @@ function stationIndex(graph) {
   return byCode;
 }
 
-// The station a search is anchored on: the nearest junction within JUNCTION_REACH_METERS (junctions are where most trains
-// call, e.g. Secunderabad Jn for central Hyderabad), otherwise the nearest station (a halt only if nothing else is near).
-// RailRadar's byCity grouping is NOT used: it reports the last station a train reaches inside the city (Lingampalli,
-// Medchal...), which sends people to the far edge of the city.
+// The station a search is anchored on. Within JUNCTION_REACH_METERS, the largest nearby interchange (station size from
+// railStations.js, traded against distance: a station 7 km away must be clearly larger than one 2 km away), e.g.
+// Secunderabad Jn for central Hyderabad or Chennai Central for central Chennai; otherwise the nearest station (a halt
+// only if nothing else is near). Other terminals of the same city are covered by one byCity question (Stage B below).
+// A station NAMED after the place the traveller is in (Hyderabad Deccan, Mumbai Central, New Delhi, Guwahati) is that
+// place's own station and counts as a major one: station identity, not a list of cities.
 const JUNCTION_REACH_METERS = 8000;
+const MAJOR_IMPORTANCE = 0.5;
+const PLACE_STATION_BONUS = 0.25;
+const placeWord = name => String(name ?? '').toLowerCase().replace(/\(.*?\)/g, ' ').replace(/[^a-z\s]/g, ' ').trim().split(/\s+/)[0] ?? '';
+export const namedAfterPlace = (station, placeName) => {
+  const word = placeWord(placeName);
+  return word.length >= 4 && [station.name, ...(station.aliases ?? [])].some(n => String(n).toLowerCase().split(/[^a-z]+/).includes(word));
+};
 export function anchorStation(graph, point, radiusMeters) {
-  const near = [];
-  for (const s of graph?.stations ?? []) {
-    if (!s.code) continue;
-    const m = haversineMeters(point.lat, point.lon, s.lat, s.lon);
-    if (m <= radiusMeters) near.push({ s, m });
-  }
-  near.sort((a, b) => a.m - b.m);
-  const junction = near.find(e => /junction|\bjn\b/i.test(e.s.name) && e.m <= Math.min(JUNCTION_REACH_METERS, radiusMeters));
+  const near = graph?.nearby
+    ? graph.nearby(point.lat, point.lon, radiusMeters).filter(e => e.station.code).map(e => ({ s: e.station, m: e.meters }))
+    : (graph?.stations ?? []).filter(s => s.code).map(s => ({ s, m: haversineMeters(point.lat, point.lon, s.lat, s.lon) })).filter(e => e.m <= radiusMeters).sort((a, b) => a.m - b.m);
+  const reach = Math.min(JUNCTION_REACH_METERS, radiusMeters);
+  const importanceOf = graph?.importanceOf && (s => Math.min(1, graph.importanceOf(s) + (point.name && namedAfterPlace(s, point.name) ? PLACE_STATION_BONUS : 0)));
+  const value = e => importanceOf(e.s) - e.m / 20000;
+  const major = importanceOf
+    ? near.filter(e => e.m <= reach && importanceOf(e.s) >= MAJOR_IMPORTANCE).sort((a, b) => value(b) - value(a) || a.m - b.m)[0]
+    : near.find(e => /junction|\bjn\b/i.test(e.s.name) && e.m <= reach);
   const station = near.find(e => e.s.kind === 'station');
-  return junction ?? station ?? near[0] ?? null;
+  return major ?? station ?? near[0] ?? null;
+}
+
+// Does the train run on `searchDate` at its boarding station? RailRadar already answers per date; this re-checks the
+// running days it returns (shifted to the day the train started), so a train is never offered on a day it does not run.
+export function runsOnDate(train, searchDate) {
+  if (!Array.isArray(train.runDays) || train.runDays.length === 0) return true; // no pattern given: the provider's date answer stands
+  const started = isoToDayNumber(searchDate) - Math.max(0, (train.from?.day ?? 1) - 1);
+  return train.runDays.includes(API_DAYS[weekdayIndex(started)]);
 }
 
 // Running days at the boarding station: the train's origin days shifted by the journey day there.
@@ -95,6 +113,7 @@ export function trainsToTrunks(trains, {
   };
   const candidates = [];
   for (const t of trains) {
+    if (!runsOnDate(t, searchDate)) continue;
     const dep = clockSeconds(t.from.departure);
     const arr = clockSeconds(t.to.arrival);
     if (dep === null || arr === null) continue;
@@ -169,7 +188,7 @@ export function trainsToTrunks(trains, {
 // Request budget and search behaviour. RailRadar's free tier is ~100 requests a month per key, so one ordinary search
 // must never spend more than a handful: the cap below is per search, on top of the monthly budget per credential.
 export const RAIL_SEARCH_DEFAULTS = Object.freeze({
-  maxRequestsPerSearch: 3,   // new (uncached) requests one search may make
+  maxRequestsPerSearch: 4,   // new (uncached) requests one search may make (never more than a tenth of the month's remainder)
   lowQuotaRemaining: 20,     // at or below this many requests left this month: direct (anchor) trains only
   maxHubPairs: 6,            // hub pairs considered at all (cached ones are free; the rest compete for the cap)
   concurrency: 2,            // requests in flight at once
@@ -185,7 +204,11 @@ export const RAIL_SEARCH_DEFAULTS = Object.freeze({
                              // served, so another terminal in the same town is a poor use of a request)
   stationClusterMeters: 10000, // two hub pairs whose ends are both this close are one question
   railChangeMinutes: 20,     // two trains at the same station: minimum change time
-  maxChangeWaitMinutes: 240  // ... and the longest wait for the second train
+  maxChangeWaitMinutes: 240, // ... and the longest wait for the second train
+  cityRadiusMeters: 10000,   // an end with at least cityMinStations stations this close is a multi-terminal city ...
+  cityMinStations: 3,        // ... and gets ONE byCity question (all its terminals) when direct trains are not enough
+  expandedRadiusMeters: 60000, // no station within the normal radius: look this far once, and say so
+  confidentTerminal: 0.8       // a city's anchor at least this "major" (station size + named after the place) is asked plainly
 });
 
 export function railSearchSettings(env = process.env) {
@@ -193,7 +216,8 @@ export function railSearchSettings(env = process.env) {
   return Object.freeze({
     ...RAIL_SEARCH_DEFAULTS,
     maxRequestsPerSearch: env.RAILRADAR_MAX_REQUESTS_PER_SEARCH !== undefined && Number.isInteger(n) && n >= 0 && n <= 10 ? n : RAIL_SEARCH_DEFAULTS.maxRequestsPerSearch,
-    hubs: env.ROUTECONNECT_RAIL_HUB_SEARCH !== 'false'
+    hubs: env.ROUTECONNECT_RAIL_HUB_SEARCH !== 'false',
+    cityTerminals: env.ROUTECONNECT_RAIL_CITY_SEARCH !== 'false'
   });
 }
 
@@ -205,15 +229,18 @@ function withDeadline(promise, ms) {
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
 
-// Two trains at a junction: each first train with the earliest second train leaving after the change time.
-export function chainAtStation(firstTrunks, secondTrunks, { changeSeconds, maxWaitSeconds, max = 3 }) {
+// Two trains at a junction: each first train with the earliest second train leaving after the change time. A change
+// between two stations of one city (byCity legs) needs at least crossStationSeconds; compose.js then checks the actual
+// connection (walk / bus / ride between them) on real times.
+export function chainAtStation(firstTrunks, secondTrunks, { changeSeconds, maxWaitSeconds, crossStationSeconds = 3600, max = 3 }) {
   const out = [];
   const used = new Set();
   const byDeparture = [...secondTrunks].sort((a, b) => a[0].planning.departureSeconds - b[0].planning.departureSeconds);
   for (const [first] of [...firstTrunks].sort((a, b) => a[0].planning.arrivalSeconds - b[0].planning.arrivalSeconds)) {
     const next = byDeparture.find(([second]) => {
       const wait = second.planning.departureSeconds - first.planning.arrivalSeconds;
-      return wait >= changeSeconds && wait <= maxWaitSeconds && second.trainNumber !== first.trainNumber;
+      const needed = second.from?.code && first.to?.code && second.from.code !== first.to.code ? Math.max(changeSeconds, crossStationSeconds) : changeSeconds;
+      return wait >= needed && wait <= maxWaitSeconds && second.trainNumber !== first.trainNumber;
     });
     if (!next) continue;
     const key = `${first.trainNumber}>${next[0].trainNumber}@${next[0].departureTime}`;
@@ -253,8 +280,21 @@ export function createRailRadarSource({ env = process.env, client = createRailRa
       const accessSeconds = meters => (meters <= COMPOSE_DEFAULTS.walkMaxMeters ? estimateWalk(meters, routing).durationSeconds : estimateLocalRide(meters, routing).durationSeconds);
       const operatorInfo = operatorIdentity('Indian Railways', { source: 'rail:RailRadar', confidence: 'published', typeHint: 'rail' });
       const radius = Math.min(40000, Math.max(5000, ctx.crowFliesMeters * 0.4));
-      const from = anchorStation(set, ctx.origin, radius);
-      const to = anchorStation(set, ctx.destination, radius);
+      // Controlled fallback: no station within the normal radius (a place far from the railway) -> one wider look, only
+      // on long trips where a 40-60 km ride to the train can still make sense. Reported either way.
+      const stationCoverage = {};
+      const anchorAt = (point, end) => {
+        const found = anchorStation(set, point, radius);
+        if (found) { stationCoverage[end] = 'ok'; return found; }
+        if (ctx.crowFliesMeters >= 3 * settings.expandedRadiusMeters) {
+          const wide = anchorStation(set, point, settings.expandedRadiusMeters);
+          if (wide) { stationCoverage[end] = 'expanded'; return wide; }
+        }
+        stationCoverage[end] = 'none';
+        return null;
+      };
+      const from = anchorAt(ctx.origin, 'origin');
+      const to = anchorAt(ctx.destination, 'destination');
 
       // What was asked, what it cost, and what was left unasked (and why): reported with the results.
       const coverage = {
@@ -267,13 +307,18 @@ export function createRailRadarSource({ env = process.env, client = createRailRa
         via: null,
         limitedBy: null,
         quotaLow: false,
-        errors: []
+        errors: [],
+        stations: stationCoverage,
+        cityTerminals: null
       };
       const monthly = client.budget();
       const left = Math.min(Math.max(0, monthly.budget - monthly.used), monthly.providerRemaining ?? Infinity);
-      if (left <= settings.lowQuotaRemaining) {
-        coverage.quotaLow = true;
-        coverage.requests.allowed = Math.min(1, settings.maxRequestsPerSearch);
+      // Never more than a tenth of what is left this month (47 left -> 4, 30 -> 3), and direct trains only near the end.
+      const quotaShare = left <= settings.lowQuotaRemaining ? 1 : Math.max(1, Math.floor(left / 10));
+      if (quotaShare < settings.maxRequestsPerSearch) {
+        coverage.quotaLow = left <= settings.lowQuotaRemaining;
+        coverage.quotaLimited = true;
+        coverage.requests.allowed = Math.min(quotaShare, settings.maxRequestsPerSearch);
       }
 
       const viaOf = meters => (meters <= COMPOSE_DEFAULTS.walkMaxMeters ? 'walk' : 'ride');
@@ -286,10 +331,10 @@ export function createRailRadarSource({ env = process.env, client = createRailRa
       const nextDate = (days = 1) => dayNumberToIso(isoToDayNumber(ctx.date) + days);
       // The date to ask about for a hub: the day the traveller can first board there.
       const boardingDate = pair => nextDate(Math.max(0, Math.floor((ctx.windowStartSeconds + pair.from.minutes * 60 + COMPOSE_DEFAULTS.bufferBeforeSeconds.rail) / DAY)));
-      const costOf = (pair, date) => client.costOf(pair.from.station.code, pair.to.station.code, date);
+      const costOf = (pair, date, byCity = false) => client.costOf(pair.from.station.code, pair.to.station.code, date, { byCity });
 
-      const runPair = async (pair, date, window = null) => {
-        const entry = { from: pair.from.station.code, to: pair.to.station.code, date, role: pair.role, cost: costOf(pair, date) };
+      const runPair = async (pair, date, window = null, { byCity = false } = {}) => {
+        const entry = { from: pair.from.station.code, to: pair.to.station.code, date, role: pair.role, cost: costOf(pair, date, byCity), ...(byCity ? { byCity: true } : {}) };
         if (entry.cost === 'request') {
           if (coverage.requests.made >= coverage.requests.allowed) { coverage.skipped.budget++; return null; }
           if (settings.deadlineMs - elapsed() < settings.minRequestMs) { coverage.skipped.time++; return null; }
@@ -300,12 +345,13 @@ export function createRailRadarSource({ env = process.env, client = createRailRa
         coverage.pairs.push(entry);
         let trains;
         try {
-          trains = await withDeadline(client.trainsBetween(entry.from, entry.to, date), settings.deadlineMs - elapsed());
+          trains = await withDeadline(client.trainsBetween(entry.from, entry.to, date, { byCity }), settings.deadlineMs - elapsed());
         } catch (error) {
           entry.error = error.code ?? 'PROVIDER_ERROR';
           coverage.errors.push({ code: entry.error, message: error.message });
           return { error, trunks: [] };
         }
+        recordTimetableEvidence(trains);
         const accessFor = planningSeconds(pair.from);
         const egressFor = planningSeconds(pair.to);
         const trunks = trainsToTrunks(trains, {
@@ -323,21 +369,73 @@ export function createRailRadarSource({ env = process.env, client = createRailRa
       const inWindowCount = list => list.filter(sequence => sequence[0].planning.inWindow).length;
       const bestArrival = list => list.reduce((best, sequence) => Math.min(best, sequence.at(-1).planning.doorArrivalSeconds), Infinity);
 
-      // 1. Direct trains between the main stations near each end.
+      // Stage A. Direct trains between the main stations near each end. In a multi-terminal city whose nearest large
+      // station is not clearly ITS main station (a suburban junction near a city centre), the first question is a byCity
+      // one: every station of both cities in one request, so the right terminal is not left to a guess.
+      const isCity = point => (set.isCity
+        ? set.isCity(point, settings.cityRadiusMeters, settings.cityMinStations)
+        : Boolean(set.nearby) && set.nearby(point.lat, point.lon, settings.cityRadiusMeters).filter(e => e.station.kind === 'station').length >= settings.cityMinStations);
+      const confident = (end, point) => importanceOf(end.station) + (point.name && namedAfterPlace(end.station, point.name) ? PLACE_STATION_BONUS : 0) >= settings.confidentTerminal;
+      const cityEnds = anchor ? { origin: isCity(ctx.origin), destination: isCity(ctx.destination) } : { origin: false, destination: false };
+      const cityFirst = Boolean(settings.cityTerminals && anchor && ((cityEnds.origin && !confident(anchor.from, ctx.origin)) || (cityEnds.destination && !confident(anchor.to, ctx.destination))));
       const found = [];
       if (anchor) {
         const dates = [ctx.date];
         if (ctx.windowEndSeconds > DAY) dates.push(nextDate()); // a window past midnight also needs the next day's trains
-        for (const date of dates) found.push(...((await runPair(anchor, date))?.trunks ?? []));
+        for (const date of dates) found.push(...((await runPair(anchor, date, null, { byCity: cityFirst }))?.trunks ?? []));
       }
 
-      // 2. Transfer hubs, only when they can help: too few direct trains in the window, or a hub promising a clearly
+      // Stage B. Other terminals of a multi-terminal city (Chennai Central / Egmore / Perambur, Lucknow Jn / Charbagh):
+      // ONE byCity question when the plain question was not enough. A train already found keeps its original station.
+      if (settings.cityTerminals && anchor && !cityFirst && (cityEnds.origin || cityEnds.destination)
+        && inWindowCount(found) < settings.enoughInWindow) {
+        const known = new Set(found.map(sequence => sequence[0].trainNumber));
+        const city = (await runPair({ ...anchor, role: 'city' }, ctx.date, null, { byCity: true }))?.trunks ?? [];
+        const added = city.filter(sequence => !known.has(sequence[0].trainNumber));
+        found.push(...added);
+      }
+      coverage.cityTerminals = { cityFirst, asked: coverage.pairs.some(p => p.byCity), ends: cityEnds };
+
+      // Stage D. Two trains with a change at a junction (Train -> Train), only when no direct train was found and the
+      //    budget still allows both questions. A station change (Train -> walk / bus -> Train) is composed and validated in compose.js.
+      const tryVia = async () => {
+        viaDone = true;
+        if (settings.hubs && anchor && found.length === 0 && ctx.crowFliesMeters >= settings.minHubTripMeters
+          && coverage.requests.allowed - coverage.requests.made >= 2) {
+          const [via] = viaJunctions({ stations: set.stations, nearby: set.nearby ?? null, origin: anchor.from.station, destination: anchor.to.station, exclude: new Set([anchor.from.station.code, anchor.to.station.code]), importanceOf, options: hubOptions, max: 1 });
+          if (via) {
+            coverage.via = via.station.code;
+            const mid = end(via.station, 'station', 0);
+            // In a multi-terminal city the change may be between two of its stations (arrive Delhi Jn, leave New Delhi):
+            // byCity legs find both; compose.js then checks the connection between them on real times.
+            const viaCity = settings.cityTerminals && isCity(via.station);
+            const first = (await runPair({ from: anchor.from, to: mid, role: 'via' }, ctx.date, null, { byCity: viaCity }))?.trunks ?? [];
+            if (first.length > 0) {
+              const change = settings.railChangeMinutes * 60;
+              const earliest = Math.min(...first.map(([leg]) => leg.planning.arrivalSeconds));
+              const date = nextDate(Math.floor((earliest + change) / DAY));
+              const window = { windowStartSeconds: earliest + change - COMPOSE_DEFAULTS.bufferBeforeSeconds.rail, windowEndSeconds: earliest + settings.maxChangeWaitMinutes * 60 };
+              const second = (await runPair({ from: mid, to: anchor.to, role: 'via' }, date, window, { byCity: viaCity }))?.trunks ?? [];
+              found.push(...chainAtStation(first, second, { changeSeconds: change, maxWaitSeconds: settings.maxChangeWaitMinutes * 60 }));
+            }
+          }
+        }
+      };
+
+      // Where neither end is inside the bus dataset, "hubs" can only be other stations within ride range (largely what
+      // Stage B covers), so a change between two trains is tried first.
+      let viaDone = false;
+      const busCoverage = Boolean(ctx.busAllowed && ctx.network) && [ctx.origin, ctx.destination].some(p => busStopsNear(ctx.network, p));
+      coverage.busCoverage = busCoverage;
+      if (!busCoverage) await tryVia();
+
+      // Stage C. Transfer hubs, only when they can help: too few direct trains in the window, or a hub promising a clearly
       //    earlier arrival. Hubs nobody can reach in time, or that cannot beat the best bus, are never asked about.
       let needHubs = false;
       if (settings.hubs && ctx.crowFliesMeters >= settings.minHubTripMeters) {
         const busAllowed = ctx.busAllowed !== false && Boolean(ctx.network);
         const reach = busAllowed ? busReachFrom(ctx.network, ctx.origin, { date: ctx.date, timeSeconds: ctx.windowStartSeconds, config: routing }) : null;
-        const common = { stations: set.stations, network: ctx.network ?? null, busAllowed, config: routing, importanceOf, options: hubOptions };
+        const common = { stations: set.stations, nearby: set.nearby ?? null, network: ctx.network ?? null, busAllowed, config: routing, importanceOf, options: hubOptions };
         const origins = hubCandidates({ ...common, point: ctx.origin, other: ctx.destination, role: 'origin', reach });
         const destinations = hubCandidates({ ...common, point: ctx.destination, other: ctx.origin, role: 'destination' });
         coverage.hubs = { origin: origins.map(h => h.station.code), destination: destinations.map(h => h.station.code) };
@@ -356,7 +454,9 @@ export function createRailRadarSource({ env = process.env, client = createRailRa
           const sameTown = p => anchor && near(p.from.station, anchor.from.station) && near(p.to.station, anchor.to.station);
           const promising = pairs.filter(p => {
             const beatsBus = !Number.isFinite(ctx.bestBusArrivalSeconds) || estimatedArrival(p) <= ctx.bestBusArrivalSeconds + settings.busSlackMinutes * 60;
-            const useful = beatsBus && !(sameTown(p) && anchorTrains >= settings.wellServedTrains);
+            // Once a byCity question covered every station of both towns, another pair in the same towns adds nothing.
+            const coveredByCity = coverage.pairs.some(q => q.byCity && (q.role === 'anchor' || q.role === 'city'));
+            const useful = beatsBus && !(sameTown(p) && (anchorTrains >= settings.wellServedTrains || coveredByCity));
             if (!useful) coverage.skipped.unpromising++;
             return useful;
           }).sort((a, b) => Number(sameTown(a)) - Number(sameTown(b))).filter((p, i, list) => {
@@ -377,25 +477,7 @@ export function createRailRadarSource({ env = process.env, client = createRailRa
         }
       }
 
-      // 3. Two trains with a change at a junction (Train -> Train), only when nothing else was found and the budget
-      //    still allows both questions. A station change (Train -> walk / bus -> Train) is composed and validated in compose.js.
-      if (settings.hubs && anchor && inWindowCount(found) === 0 && ctx.crowFliesMeters >= settings.minHubTripMeters
-        && coverage.requests.allowed - coverage.requests.made >= 2) {
-        const [via] = viaJunctions({ stations: set.stations, origin: anchor.from.station, destination: anchor.to.station, exclude: new Set([anchor.from.station.code, anchor.to.station.code]), importanceOf, options: hubOptions, max: 1 });
-        if (via) {
-          coverage.via = via.station.code;
-          const mid = end(via.station, 'station', 0);
-          const first = (await runPair({ from: anchor.from, to: mid, role: 'via' }, ctx.date))?.trunks ?? [];
-          if (first.length > 0) {
-            const change = settings.railChangeMinutes * 60;
-            const earliest = Math.min(...first.map(([leg]) => leg.planning.arrivalSeconds));
-            const date = nextDate(Math.floor((earliest + change) / DAY));
-            const window = { windowStartSeconds: earliest + change - COMPOSE_DEFAULTS.bufferBeforeSeconds.rail, windowEndSeconds: earliest + settings.maxChangeWaitMinutes * 60 };
-            const second = (await runPair({ from: mid, to: anchor.to, role: 'via' }, date, window))?.trunks ?? [];
-            found.push(...chainAtStation(first, second, { changeSeconds: change, maxWaitSeconds: settings.maxChangeWaitMinutes * 60 }));
-          }
-        }
-      }
+      if (!viaDone) await tryVia();
 
       if (coverage.skipped.budget > 0) coverage.limitedBy = coverage.quotaLow ? 'quota' : 'budget';
       else if (coverage.skipped.time > 0 || coverage.errors.some(e => e.code === 'DEADLINE')) coverage.limitedBy = 'time';

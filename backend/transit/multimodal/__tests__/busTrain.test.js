@@ -197,7 +197,7 @@ describe('Bus + Train journeys through the planner (synthetic timetables)', () =
     for (const j of trainOnly.body.journeys) assert.ok(!j.legs.some(l => l.mode === 'bus'), shape(j));
     // From the small town a train-only trip has no reachable station with a train: said truthfully, not "no route".
     assert.equal(trainOnly.body.journeys.length, 0);
-    assert.match(trainOnly.body.message, /scheduled train/);
+    assert.match(trainOnly.body.message, /No trains were found between the stations checked|scheduled train/);
   });
 });
 
@@ -431,7 +431,7 @@ describe('production compatibility', () => {
     assert.ok(!text.includes('"planning"'), 'internal planning estimates are never shown as journey data');
     assert.ok(Array.isArray(body.railSearch.pairs) && body.railSearch.pairs.every(p => /^[A-Z]+$/.test(p.from)));
     assert.equal(typeof body.performance.composeMs, 'number');
-    assert.deepEqual(Object.keys(describeCoverage({ journeys: [], candidates: [], railReport: null, railMeta: null, windowMinutes: 60 })).sort(), ['found', 'modes', 'rail', 'shown', 'windowMinutes']);
+    assert.deepEqual(Object.keys(describeCoverage({ journeys: [], candidates: [], railReport: null, railMeta: null, windowMinutes: 60 })).sort(), ['bus', 'found', 'modes', 'rail', 'shown', 'windowMinutes']);
   });
 
   test('the train source finishes before the runner gives up on it, so partial results are not thrown away', () => {

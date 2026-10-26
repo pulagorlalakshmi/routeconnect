@@ -107,13 +107,26 @@ export function searchPlaces(network, text, { limit = 8 } = {}) {
   }));
 }
 
-// Best place for a typed name, or null.
+// Best place for a typed name, or null. Planning needs a whole-word match: a substring ("patna" inside
+// "Visakhapatnam") is fine as an autocomplete hint, never as the place a journey is planned from.
 export function resolvePlace(network, text) {
-  return searchPlaces(network, text, { limit: 1 })[0] ?? null;
+  const best = searchPlaces(network, text, { limit: 1 })[0] ?? null;
+  return best && best.matchedBy !== 'contains' ? best : null;
+}
+
+// Bus-timetable places first (routable by bus), then nationwide cities / towns / stations (coordinates only, see
+// nationalPlaces.js), then substring-only bus matches. A city that is also a bus place of the same name nearby is
+// listed once, as the bus place.
+export function mergePlaceSuggestions(gtfs, national, limit) {
+  const strong = gtfs.filter(p => p.matchedBy !== 'contains');
+  const weak = gtfs.filter(p => p.matchedBy === 'contains');
+  const sameAsBus = n => strong.some(p => normalizePlaceName(p.name) === normalizePlaceName(n.name.replace(/\s*\([A-Z]+\)$/, '')) && haversineMeters(p.lat, p.lon, n.lat, n.lon) <= 20000);
+  const extra = national.filter(n => !sameAsBus(n)).map(n => ({ ...n, stopCount: 0, services: 0 }));
+  return [...strong.map(p => ({ ...p, kind: 'bus_stop' })), ...extra, ...weak.map(p => ({ ...p, kind: 'bus_stop' }))].slice(0, limit);
 }
 
 // HTTP-facing wrapper for GET /api/v2/places?query=&limit=
-export function handlePlaceSearch(rawQuery, getNetwork) {
+export function handlePlaceSearch(rawQuery, getNetwork, { national = () => [] } = {}) {
   const query = rawQuery?.query;
   const limitText = rawQuery?.limit;
   if (Array.isArray(query) || Array.isArray(limitText)) return { status: 400, body: { error: 'Parameters must be provided once.' } };
@@ -139,5 +152,7 @@ export function handlePlaceSearch(rawQuery, getNetwork) {
     console.warn('[Transit Diagnostics] Place search requested but transit network is not available in memory. Import a GTFS feed with "npm run transit:ensure" or "npm run transit:import".');
     return { status: 503, body: { error: 'Transit data is not available. Import a GTFS feed first.' } };
   }
-  return { status: 200, body: { query: query.trim(), places: searchPlaces(network, query, { limit }) } };
+  let nationwide = [];
+  try { nationwide = national(query, { limit }); } catch (error) { console.error('Nationwide place search failed:', error.message); }
+  return { status: 200, body: { query: query.trim(), places: mergePlaceSuggestions(searchPlaces(network, query, { limit }), nationwide, limit) } };
 }
