@@ -11,7 +11,8 @@ import { searchRail, toTrunk, runningDaysAt, paretoRail } from '../railSearch.js
 import { createRailSource, railAvailability } from '../../sources/rail/railSource.js';
 import { getCapabilities } from '../railStatus.js';
 import { createRailRadarClient } from '../verification/railRadar.js';
-import { createBusFeeder, localClock } from '../../multimodal/busFeeder.js';
+import { createBusFeeder, localClock, searchBeforeMinutes } from '../../multimodal/busFeeder.js';
+import { haversineMeters } from '../../routing/geo.js';
 import { composeAroundTrunk } from '../../multimodal/compose.js';
 import { railWarnings } from '../../multimodal/planMultimodal.js';
 import { getRoutingConfig } from '../../routing/config.js';
@@ -300,8 +301,8 @@ describe('rail source in the planner', () => {
 describe('bus + train composition', () => {
   const config = getRoutingConfig();
   const fareConfig = getFareConfig();
-  const origin = { lat: 15.7, lon: 79.7, name: 'Test village' };
-  const destination = { lat: 17.3, lon: 81.2, name: 'Test town' };
+  const origin = { lat: 15.85, lon: 79.85, name: 'Test village' };   // ~23 km from TA: a local ride is still offered
+  const destination = { lat: 17.2, lon: 81.0, name: 'Test town' };     // ~19 km from TD
   const trunk = {
     mode: 'rail', trainNumber: '90001', trainName: 'Test Train 90001', displayName: '90001 Test Train 90001', operator: 'Indian Railways',
     from: { type: 'station', name: 'Test A Jn', code: 'TA', lat: 16.0, lon: 80.0 }, to: { type: 'station', name: 'Test D', code: 'TD', lat: 17.05, lon: 80.9 },
@@ -343,9 +344,20 @@ describe('bus + train composition', () => {
     assert.equal(legs[0].from.name, 'Test village');
     assert.equal(legs.at(-1).kind, 'transfer');
     assert.equal(legs.at(-1).to.code, 'TA');
-    assert.equal(plans[0].time, '03:10');
+    // The search starts early enough for the bus ride itself (sized by distance, never less than 150 minutes).
+    const before = searchBeforeMinutes(haversineMeters(origin.lat, origin.lon, trunk.from.lat, trunk.from.lon));
+    assert.ok(before >= 150);
+    assert.equal(plans[0].time, localClock(Date.parse('2026-10-20T05:40:00+05:30') - before * 60000, '+05:30').time);
     assert.equal(feeder.egress(trunk.to, destination, Date.parse('2026-10-20T08:40:00+05:30')), null, 'call budget spent: no unbounded searching');
     assert.equal(feeder.calls, 1);
+  });
+
+  test('a station beyond local-ride range is offered only by timetable bus, never as a long auto ride', () => {
+    const far = { lat: 15.55, lon: 79.55, name: 'Far village' }; // ~68 km from TA
+    const access = (o, station, latestMs) => [busLeg(o.name, station.name, new Date(latestMs - 150 * 60000).toISOString(), new Date(latestMs - 5 * 60000).toISOString())];
+    const withBus = composeAroundTrunk([trunk], { origin: far, destination, utcOffset: '+05:30', config, fareConfig, transitAccess: access });
+    assert.deepEqual(withBus.map(j => j.legs.map(l => l.mode).join('>')), ['bus>rail>local_ride']);
+    assert.deepEqual(composeAroundTrunk([trunk], { origin: far, destination, utcOffset: '+05:30', config, fareConfig }), [], 'no bus, no journey');
   });
 
   test('local clock conversion for planner queries', () => {

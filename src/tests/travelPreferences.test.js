@@ -241,7 +241,7 @@ describe('5. results page and Data & policies page', () => {
   });
 
   test('notes about this particular search stay on the results page as one-line notices', () => {
-    assert.match(results(), /SEARCH_SPECIFIC_INFO = new Set\(\['ORIGIN_DESTINATION_WALKABLE', 'SEARCH_WINDOW_EXPANDED', 'LOCAL_RIDE_HEAVY', 'RAIL_SCHEDULED_ONLY'\]\)/);
+    assert.match(results(), /SEARCH_SPECIFIC_INFO = new Set\(\['ORIGIN_DESTINATION_WALKABLE', 'SEARCH_WINDOW_EXPANDED', 'LOCAL_RIDE_HEAVY', 'RAIL_SCHEDULED_ONLY', 'MIXED_ONLY'\]\)/);
   });
 
   test('routes: /about-data renders the page, /policies redirects to it, and the navbar links to it', () => {

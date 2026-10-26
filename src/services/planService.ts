@@ -300,6 +300,25 @@ export interface PlanResponse {
   preferences?: { modes: string[]; rank: 'best' | 'fastest' | 'cost' | 'transfers' | null };
   journeys: Journey[];
   performance: { queryTimeMs: number };
+  // What was searched: bus-only / train-only / bus + train journeys found, and how complete the train search was.
+  searchCoverage?: SearchCoverage;
+}
+
+export interface SearchCoverage {
+  windowMinutes: number;
+  modes: string[];
+  shown: { bus: number; train: number; mixed: number };
+  found: { bus: number; train: number; mixed: number };
+  rail: {
+    status: 'ok' | 'not_configured' | 'not_applicable' | 'timeout' | 'error' | 'not_searched';
+    message: string | null;
+    // Why the train search stopped before asking about every promising station pair.
+    limitedBy: 'budget' | 'quota' | 'time' | 'provider_error' | null;
+    pairsChecked: number;
+    pairsSkipped: number;
+    requests: { made: number; cached: number; shared: number; allowed: number } | null;
+    hubSearch: 'searched' | 'not_needed' | 'no_candidates' | 'not_applicable' | null;
+  };
 }
 
 export interface PlaceSuggestion {

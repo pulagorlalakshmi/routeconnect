@@ -80,6 +80,38 @@ npm run rail:search -- --from BZA --to SC --date 2026-10-20 --time 06:00 [--wind
 - RailRadar (optional): `RAILRADAR_API_KEY` server-side only; `GET /api/v2/rail/verify?train=&from=&to=&date=&departure=&arrival=`
   (503 without a key, 20 requests/hour in-process limit, 100/month budget).
 
+## Bus + Train journeys (RailRadar)
+
+Scheduled trains are combined with timetable buses into door-to-door journeys (Bus → Train, Train → Bus,
+Bus → Train → Bus, and Train → Train / Train → Bus → Train when the budget allows):
+
+1. **Anchor pair** - the main station near each end (direct trains): one RailRadar request, cached 6 h.
+2. **Transfer hubs** (`multimodal/railHubs.js`) - only when the anchor has too few trains in the window, or a hub promises
+   an arrival at least 45 min earlier. Candidates are large stations (mapped track + "Junction") with a bus stand
+   nearby; origin-side hubs must be reachable by timetable bus (one RAPTOR run, real arrival times). Pairs that cannot
+   come close to the best bus, or are another terminal in the same two towns while the anchor has trains, are not asked.
+3. **Composition** (`multimodal/compose.js`, `busFeeder.js`) - the latest bus that still reaches the station 20 min before
+   departure; the first bus after the 10-min station exit; every connection is checked on absolute date-times. A
+   ride-only connection is offered up to 40 km to the nearest station, 15 km to a bus-reached hub; never longer.
+4. **Ranking** - bus + train is its own kind for diversity (never promoted): one that a simpler journey matches on the
+   clock is dropped. Train fares are unknown, so such totals are partial and rank after complete fares under "cost".
+
+Request budget (RailRadar free tier ≈ 100 requests/month per key):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RAILRADAR_MAX_REQUESTS_PER_SEARCH` | `3` | new (uncached) requests one search may make; `1` = direct trains only |
+| `RAILRADAR_MONTHLY_REQUEST_BUDGET` | `100` | per credential; at ≤ 20 left, searches ask about direct trains only |
+| `RAILRADAR_CACHE_TTL_HOURS` | `6` | how long a station-pair answer is reused |
+| `ROUTECONNECT_RAIL_HUB_SEARCH` | on | `false` disables transfer hubs |
+| `ROUTECONNECT_MULTIMODAL_MAX_TRANSFERS` | `2` | most public-transport changes in a bus + train journey |
+
+Each response carries `railSearch` (pairs asked, cached / new requests, skipped and why, `limitedBy`) and
+`searchCoverage`; the server logs one `[Rail search] ...: N RailRadar request(s), M cached` line per search. When the
+budget or the deadline (12 s) stops the search early, the results say so (`RAIL_SEARCH_LIMITED`) instead of "no route".
+The cache is in memory: on Render's free tier it is lost when the service sleeps, so the first search after a wake-up
+pays its requests again.
+
 ## Hypothetical corridors
 
 Not implemented. With source-backed trains available it would add risk (look-alike results) for little planning value.

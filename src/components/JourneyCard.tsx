@@ -82,12 +82,22 @@ export function journeyTitle(journey: Journey): string {
 
 export const transfersText = (n: number) => (n === 0 ? 'Direct' : `${n} transfer${n === 1 ? '' : 's'}`);
 
+// The card heading: the journey's shape, plus the number of changes when it combines bus and train
+// ("🚌 Bus + 🚆 Train — 1 transfer"), so a connecting journey is recognisable before opening the details.
+export function journeyHeading(journey: Journey): string {
+  const families = new Set(journey.legs.filter(isTransitLeg).map(leg => vehicleFamilyOf(leg)));
+  const title = journeyTitle(journey);
+  return families.size > 1 ? `${title} — ${transfersText(journey.transfers)}` : title;
+}
+
 // In this feed a headsign is often just the route number again; only a real destination name is worth showing.
 const showHeadsign = (leg: TransitLeg) => Boolean(leg.headsign) && !/^\d+$/.test(leg.headsign!.trim()) && leg.headsign!.trim() !== serviceNumberOf(leg) && leg.headsign!.trim() !== leg.routeCode;
 
 function walkText(leg: Extract<Leg, { mode: 'walk' }>): string {
   if (leg.kind === 'access') return `Walk to ${leg.to.name}`;
   if (leg.kind === 'egress') return 'Walk to your destination';
+  // Between a bus stand and a railway station (bus + train): the two are different places, said plainly.
+  if (isStation(leg.to) || isStation(leg.from)) return `Walk from ${leg.from.name} to ${leg.to.name}`;
   return `Walk between stops: ${leg.from.name} → ${leg.to.name}`;
 }
 
@@ -249,7 +259,7 @@ export default function JourneyCard({
     >
       {/* 1. What this route is */}
       <header className="flex flex-col-reverse gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <h3 className="text-lg md:text-xl font-black leading-snug text-[#1F2933]">{journeyTitle(activeJourney)}</h3>
+        <h3 className="text-lg md:text-xl font-black leading-snug text-[#1F2933]">{journeyHeading(activeJourney)}</h3>
         {badges.length > 0 && (
           <ul aria-label="Highlights" className="flex shrink-0 flex-wrap gap-1.5">
             {badges.map(label => (
@@ -321,6 +331,8 @@ export default function JourneyCard({
         <Metric label="Total time">{formatDuration(activeJourney.totalDurationSeconds)}</Metric>
         <Metric label="Approx. budget" hint={totalFare ? `${partialFare ? 'Partial estimate: some parts could not be priced. ' : ''}Estimated fare range.` : 'No fare could be estimated for this journey.'}>
           {totalFare ? <>{totalFare}{partialFare && <span aria-label="partial estimate">+</span>}</> : <>—<span className="sr-only"> fare unknown</span></>}
+          {/* A train fare is never estimated: say it is extra, rather than letting the bus-only total pass for the whole. */}
+          {trainLegs.some(leg => !leg.fare) && <span className="block text-[11px] font-semibold text-[#667085]">+ train fare (not known)</span>}
         </Metric>
         <Metric label="Depart → Arrive">
           {clockOf(activeJourney.departureTime)} → {clockOf(activeJourney.arrivalTime)}

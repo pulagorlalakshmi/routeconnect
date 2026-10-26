@@ -16,7 +16,10 @@ const STATION = /^[A-Z]{1,5}$/;
 const TRAIN = /^\d{5}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-export function createRailRadarClient({ env = process.env, fetchImpl = null, cache = createTtlCache({ ttlMs: 6 * 3600 * 1000, max: 300 }), now } = {}) {
+// Cached answers are timetables (not live data), so they stay valid for hours. RAILRADAR_CACHE_TTL_HOURS adjusts it.
+const cacheTtlMs = env => (Number(env.RAILRADAR_CACHE_TTL_HOURS) > 0 ? Number(env.RAILRADAR_CACHE_TTL_HOURS) : 6) * 3600 * 1000;
+
+export function createRailRadarClient({ env = process.env, fetchImpl = null, cache = createTtlCache({ ttlMs: cacheTtlMs(env), max: 500 }), now } = {}) {
   // Under the Node test runner, real keys never reach the network: tests must pass their own fetchImpl. This keeps
   // the test suite from spending the (small) monthly request quota.
   const underTest = Boolean(process.env.NODE_TEST_CONTEXT) && !fetchImpl;
@@ -27,8 +30,10 @@ export function createRailRadarClient({ env = process.env, fetchImpl = null, cac
   // One request with the current credential. A rejected credential (401/403, failover "auth" or "quota") or a rate-limited
   // one (429, failover "quota") hands over to the other credential and the request is retried ONCE. With failover "off"
   // these answers are reported as they are.
+  let requestsMade = 0; // real HTTP requests to RailRadar by this client (cache hits and shared in-flight answers excluded)
   async function request(url, attempt = 0) {
     const { credentialId, authorization } = credentials.acquire();
+    requestsMade++;
     let response;
     try {
       response = await fetchImpl(url, { headers: { Authorization: authorization, Accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
@@ -57,9 +62,10 @@ export function createRailRadarClient({ env = process.env, fetchImpl = null, cac
    *               distanceKm, durationMinutes, haltsBetween }
    */
   const inFlight = new Map();
+  const keyOf = (from, to, date, byCity) => `${from}|${to}|${date}|${byCity ? 'city' : 'station'}`;
   async function trainsBetween(from, to, date, { byCity = false } = {}) {
     // The cache is shared by all credentials: an answer is about the timetable, not about whose key fetched it.
-    const cacheKey = `${from}|${to}|${date}|${byCity ? 'city' : 'station'}`;
+    const cacheKey = keyOf(from, to, date, byCity);
     const hit = cache.get(cacheKey);
     if (hit) return hit;
     // Identical questions asked at the same time (e.g. two searches, or a search and the verify endpoint) share one request.
@@ -106,6 +112,13 @@ export function createRailRadarClient({ env = process.env, fetchImpl = null, cac
       return { month: new Date().toISOString().slice(0, 7), used: active.usedThisMonth, budget: summary.budgetPerCredential, providerRemaining: active.providerRemaining, active: summary.active, failover: summary.failover };
     },
     trainsBetween,
+    // What a trainsBetween call would cost right now: 'cached' (free), 'in_flight' (shares a pending request) or 'request'.
+    costOf: (from, to, date, { byCity = false } = {}) => {
+      const key = keyOf(from, to, date, byCity);
+      if (cache.get(key) !== undefined) return 'cached';
+      return inFlight.has(key) ? 'in_flight' : 'request';
+    },
+    get requestsMade() { return requestsMade; },
 
     /**
      * @param {{ train: string, from: string, to: string, date: string, departure: string, arrival: string }} scheduled

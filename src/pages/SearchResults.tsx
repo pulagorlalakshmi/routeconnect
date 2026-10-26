@@ -69,7 +69,7 @@ const SORT_LABEL: Record<SortKey, string> = {
 };
 
 // General explanations live on the Data & policies page; only notes about THIS search stay on the results page.
-const SEARCH_SPECIFIC_INFO = new Set(['ORIGIN_DESTINATION_WALKABLE', 'SEARCH_WINDOW_EXPANDED', 'LOCAL_RIDE_HEAVY', 'RAIL_SCHEDULED_ONLY']);
+const SEARCH_SPECIFIC_INFO = new Set(['ORIGIN_DESTINATION_WALKABLE', 'SEARCH_WINDOW_EXPANDED', 'LOCAL_RIDE_HEAVY', 'RAIL_SCHEDULED_ONLY', 'MIXED_ONLY']);
 
 // The preference step's "Show first" choice (URL `rank`) IS the sort for these four keys; choosing one of them here
 // writes it back to the URL, so refresh, back/forward and "later departures" keep it. Earliest departure / arrival are
@@ -445,7 +445,8 @@ function PlannedResults() {
         {trainOnly && !loading && !error && plan && plan.journeys.length === 0 && !scheduledFailed && (
           <div className="bg-white border border-[#D9DED9] rounded-xl p-8 text-center" role="status">
             <p className="text-xs uppercase tracking-widest font-extrabold text-[#146B5B]">No scheduled train found</p>
-            <p className="mt-2 text-lg font-black text-[#1F2933]">No scheduled train runs between stations near these places for this date and time.</p>
+            {/* The server says what was actually checked (and whether the train search was limited); never more than that. */}
+            <p className="mt-2 text-lg font-black text-[#1F2933]">{plan.message ?? 'No scheduled train runs between stations near these places for this date and time.'}</p>
             <button type="button" onClick={() => navigate('/dashboard')} className="mt-5 rounded-lg bg-[#146B5B] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#0f5447] transition">
               Change search
             </button>
