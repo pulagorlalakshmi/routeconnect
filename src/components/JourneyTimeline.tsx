@@ -1,8 +1,8 @@
 import { useMemo } from 'react';
-import { Bus, TrainFront, Plane, CarTaxiFront, Footprints } from 'lucide-react';
+import { Bus, TrainFront, Plane, CarTaxiFront } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import type { Journey, TransitLeg } from '../services/planService';
-import { isTransitLeg } from '../services/planService';
+import type { Journey, TransitLeg, LocalRideLeg, WalkLeg } from '../services/planService';
+import { isTransitLeg, isLocalRideLeg, isWalkLeg } from '../services/planService';
 import { clockOf, dayDifference, formatDuration } from '../utils/dateTime';
 import { vehicleFamilyOf } from '../utils/busIdentity';
 
@@ -38,7 +38,7 @@ const MODE_ICON_MAP: Record<string, LucideIcon> = {
   train: TrainFront,
   flight: Plane,
   local_ride: CarTaxiFront,
-  walk: Footprints,
+  walk: CarTaxiFront,
 };
 
 export default function JourneyTimeline({
@@ -48,18 +48,60 @@ export default function JourneyTimeline({
   corridor,
   className = '',
 }: JourneyTimelineProps) {
+  const isCurrentLocation = useMemo(() => {
+    const firstLeg = journey.legs?.[0];
+    const firstLegName = firstLeg && isTransitLeg(firstLeg) ? firstLeg.fromStop?.name : (firstLeg as { from?: { name?: string } })?.from?.name;
+    return Boolean(
+      /current\s*location/i.test(from || '') ||
+      /current\s*location/i.test(corridor?.from || '') ||
+      /current\s*location/i.test(firstLegName || '')
+    );
+  }, [from, corridor?.from, journey.legs]);
+
   const transitLegs = useMemo(() => {
     return (journey.legs || []).filter(isTransitLeg);
   }, [journey.legs]);
 
+  const accessLeg = useMemo(() => {
+    return (journey.legs || []).find((l): l is LocalRideLeg | WalkLeg => (isLocalRideLeg(l) || isWalkLeg(l)) && l.kind === 'access') || null;
+  }, [journey.legs]);
+
+  // When starting from current location, show the local ride to the bus stand or station along the main timeline
+  const timelineLegs = useMemo<(TransitLeg | LocalRideLeg)[]>(() => {
+    if (isCurrentLocation && accessLeg && transitLegs.length > 0) {
+      const accessRide: LocalRideLeg = isLocalRideLeg(accessLeg) ? accessLeg : {
+        mode: 'local_ride',
+        kind: accessLeg.kind,
+        label: 'Local ride',
+        from: accessLeg.from,
+        to: accessLeg.to,
+        distanceMeters: accessLeg.distanceMeters || 500,
+        durationSeconds: accessLeg.durationSeconds,
+        rideSeconds: accessLeg.durationSeconds,
+        pickupWaitSeconds: 0,
+        departureTime: accessLeg.departureTime,
+        arrivalTime: accessLeg.arrivalTime,
+        dataConfidence: 'estimated',
+        durationConfidence: 'estimated',
+        providerIntegration: false,
+        availabilityStatus: 'unknown',
+        isRealtime: false,
+        fare: null
+      };
+      return [accessRide, ...transitLegs];
+    }
+    return transitLegs;
+  }, [isCurrentLocation, accessLeg, transitLegs]);
+
   const originName = useMemo(() => {
+    if (isCurrentLocation) return from?.trim() || '📍 Current Location';
     if (from && from.trim() && !/^origin$/i.test(from.trim())) return from.trim();
     if (corridor?.from && !/^origin$/i.test(corridor.from.trim())) return corridor.from;
     const firstLeg = journey.legs?.[0];
     const raw = firstLeg && isTransitLeg(firstLeg) ? firstLeg.fromStop?.name : firstLeg?.from?.name;
     if (raw && !/^origin$/i.test(raw.trim())) return raw;
     return from || 'From';
-  }, [corridor?.from, journey.legs, from]);
+  }, [isCurrentLocation, corridor?.from, journey.legs, from]);
 
   const destinationName = useMemo(() => {
     if (to && to.trim() && !/^destination$/i.test(to.trim())) return to.trim();
@@ -74,18 +116,22 @@ export default function JourneyTimeline({
   const arrTime = clockOf(journey.arrivalTime);
   const extraDays = dayDifference(journey.departureTime, journey.arrivalTime);
 
+  const getLegFromPlace = (leg: TransitLeg | LocalRideLeg) => isTransitLeg(leg) ? leg.fromStop?.name : (leg as LocalRideLeg).from?.name;
+  const getLegToPlace = (leg: TransitLeg | LocalRideLeg) => isTransitLeg(leg) ? leg.toStop?.name : (leg as LocalRideLeg).to?.name;
+  const getLegFamily = (leg: TransitLeg | LocalRideLeg) => isTransitLeg(leg) ? vehicleFamilyOf(leg) : 'local_ride';
+
   // Identify intermediate transfer points for journeys with vehicle transfers
   const transferPoints = useMemo<TransferPoint[]>(() => {
-    if (transitLegs.length <= 1) return [];
+    if (timelineLegs.length <= 1) return [];
 
     const points: TransferPoint[] = [];
-    const count = transitLegs.length - 1;
+    const count = timelineLegs.length - 1;
 
     for (let i = 0; i < count; i++) {
-      const current = transitLegs[i];
-      const next = transitLegs[i + 1];
+      const current = timelineLegs[i];
+      const next = timelineLegs[i + 1];
 
-      const rawName = current.toStop?.name || next.fromStop?.name || 'Transfer';
+      const rawName = getLegToPlace(current) || getLegFromPlace(next) || 'Transfer';
       const waitSeconds = Math.max(
         0,
         Math.round((new Date(next.departureTime).getTime() - new Date(current.arrivalTime).getTime()) / 1000)
@@ -97,8 +143,8 @@ export default function JourneyTimeline({
         id: `transfer-${i}-${rawName}`,
         name: rawName,
         positionPercent,
-        fromMode: vehicleFamilyOf(current),
-        toMode: vehicleFamilyOf(next),
+        fromMode: getLegFamily(current),
+        toMode: getLegFamily(next),
         waitTimeFormatted,
         arrivalTime: clockOf(current.arrivalTime),
         departureTime: clockOf(next.departureTime),
@@ -106,46 +152,47 @@ export default function JourneyTimeline({
     }
 
     return points;
-  }, [transitLegs]);
+  }, [timelineLegs]);
 
   // Intermediate segments for displaying travel mode icons along the line
   const segments = useMemo<TimelineSegment[]>(() => {
-    if (transitLegs.length === 0) {
+    if (timelineLegs.length === 0) {
       return [{
         id: 'seg-single',
-        mode: 'walk',
-        label: 'Direct',
-        Icon: Footprints,
+        mode: 'local_ride',
+        label: 'Local ride',
+        Icon: CarTaxiFront,
         centerPercent: 50,
       }];
     }
 
-    if (transitLegs.length === 1) {
-      const mode = vehicleFamilyOf(transitLegs[0]);
+    if (timelineLegs.length === 1) {
+      const mode = getLegFamily(timelineLegs[0]);
       return [{
         id: 'seg-single',
         mode,
-        label: mode === 'bus' ? 'Bus' : mode === 'train' ? 'Train' : 'Flight',
-        Icon: MODE_ICON_MAP[mode] || Bus,
+        label: mode === 'local_ride' ? 'Local ride' : mode === 'bus' ? 'Bus' : mode === 'train' ? 'Train' : 'Flight',
+        Icon: MODE_ICON_MAP[mode] || (mode === 'local_ride' ? CarTaxiFront : Bus),
         centerPercent: 50,
       }];
     }
 
-    const count = transitLegs.length;
-    return transitLegs.map((leg, i) => {
-      const mode = vehicleFamilyOf(leg);
+    const count = timelineLegs.length;
+    return timelineLegs.map((leg, i) => {
+      const mode = getLegFamily(leg);
       const startPct = (i / count) * 100;
       const endPct = ((i + 1) / count) * 100;
       const centerPercent = Math.round((startPct + endPct) / 2);
+      const label = mode === 'local_ride' ? 'Local ride' : mode === 'bus' ? 'Bus' : mode === 'train' ? 'Train' : 'Flight';
       return {
         id: `seg-${i}-${mode}`,
         mode,
-        label: mode === 'bus' ? 'Bus' : mode === 'train' ? 'Train' : 'Flight',
-        Icon: MODE_ICON_MAP[mode] || Bus,
+        label,
+        Icon: MODE_ICON_MAP[mode] || (mode === 'local_ride' ? CarTaxiFront : Bus),
         centerPercent,
       };
     });
-  }, [transitLegs]);
+  }, [timelineLegs]);
 
   return (
     <div

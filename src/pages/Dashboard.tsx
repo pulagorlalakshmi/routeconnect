@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import Navbar from '../components/Navbar';
 import SearchCard from '../components/SearchCard';
 import PreferenceModal from '../components/PreferenceModal';
+import { recordSearchTrip } from '../utils/tripHistory';
 import RouteDiscovery from '../components/RouteDiscovery';
 import type { DiscoveryError } from '../components/RouteDiscovery';
 import { PlanError, searchPlaces } from '../services/planService';
@@ -67,7 +68,7 @@ function describeSearchError(error: unknown): DiscoveryError {
 }
 
 export default function Dashboard() {
-  const { user } = useAuth();
+  const { user, sessionId } = useAuth();
   const navigate = useNavigate();
   // From and To are whole place objects (text + coordinates when known) held together, so a swap moves both at once.
   // Coordinates are only known when a place was picked from the list/map or GPS was used; typed names are resolved
@@ -110,7 +111,7 @@ export default function Dashboard() {
     }
     // "Current location" is offered for the start only. It can reach To through a swap, but only with its coordinates.
     if (isCurrentLocationText(to) && !places.to.coords) {
-      setValidationError('Choose a destination: search for a place or select it on the map.');
+      setValidationError('Choose a destination: search for a place.');
       return;
     }
 
@@ -232,21 +233,14 @@ export default function Dashboard() {
     setView(choice.view);
     setPending({ ...pending, initial: preferences });
 
-    // Remember the search in the browser (My Trips)
-    try {
-      const savedTrips = JSON.parse(localStorage.getItem('my_trips') || '[]');
-      const isDup = savedTrips.some((t: { from: string; to: string; date: string; time?: string }) =>
-        t.from.toLowerCase() === from.trim().toLowerCase() &&
-        t.to.toLowerCase() === to.trim().toLowerCase() &&
-        t.date === date && t.time === time
-      );
-      if (!isDup) {
-        savedTrips.unshift({ from: from.trim(), to: to.trim(), date, time, id: Date.now() });
-        localStorage.setItem('my_trips', JSON.stringify(savedTrips));
-      }
-    } catch (e) {
-      console.error('Failed to save to localStorage:', e);
-    }
+    // Remember the search in My Trips (saved for the signed-in user)
+    const searchFrom = pending.from || from.trim();
+    const searchTo = pending.to || to.trim();
+    recordSearchTrip(
+      { from: searchFrom, to: searchTo, date, time },
+      user,
+      sessionId
+    );
 
     startSearch(preferences, pending.params, choice.view);
   };
@@ -279,7 +273,7 @@ export default function Dashboard() {
   const handleToChange = (value: string) => setPlaces(prev => ({ ...prev, to: editPlaceText(prev.to, value) }));
   const handleSwap = () => setPlaces(prev => swapPlaces(prev));
 
-  const isValid = from.trim().length > 0 && to.trim().length > 0 && !samePlace && Boolean(date) && Boolean(time);
+  const isValid = from.trim().length > 0 && to.trim().length > 0 && !samePlace && Boolean(date);
   const errorMessage = validationError || (samePlace ? SAME_PLACE_MESSAGE : '');
 
   return (

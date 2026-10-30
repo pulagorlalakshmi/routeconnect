@@ -1,4 +1,4 @@
-import { ArrowUpDown, Calendar, Clock, Search } from 'lucide-react';
+import { ArrowUpDown, Calendar, Search } from 'lucide-react';
 import LocationInput from './LocationInput';
 import { todayLocalIso } from '../utils/dateTime';
 
@@ -6,14 +6,14 @@ interface SearchCardProps {
   from: string;
   to: string;
   date: string;
-  time: string;
+  time?: string;
   onFromChange: (value: string) => void;
   onCurrentLocation: (latitude: number, longitude: number) => void;
   onFromCoordinates?: (latitude: number, longitude: number) => void;
   onToChange: (value: string) => void;
   onToCoordinates?: (latitude: number, longitude: number) => void;
   onDateChange: (value: string) => void;
-  onTimeChange: (value: string) => void;
+  onTimeChange?: (value: string) => void;
   onSwapLocations: () => void;
   onSearch: () => void;
   loading: boolean;
@@ -22,20 +22,18 @@ interface SearchCardProps {
 
 const fieldClass = 'w-full pl-11 pr-3 py-3.5 text-base font-semibold text-[#1F2933] border border-[#D0D9D5] rounded-xl bg-white outline-none transition hover:border-[#B9C6C1] focus:border-[#146B5B] focus:ring-2 focus:ring-[#146B5B]/20';
 
-// The home search card: From and To stacked (with one obvious swap button between them), then date and time, then a
+// The home search card: From and To stacked (with one obvious swap button between them), then date, then a
 // single primary action. Nothing else competes for attention: preferences are asked only after "Find routes".
 export default function SearchCard({
   from,
   to,
   date,
-  time,
   onFromChange,
   onCurrentLocation,
   onFromCoordinates,
   onToChange,
   onToCoordinates,
   onDateChange,
-  onTimeChange,
   onSwapLocations,
   onSearch,
   loading,
@@ -82,7 +80,7 @@ export default function SearchCard({
       </div>
 
       <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="space-y-1.5">
+        <div className="space-y-1.5 sm:col-span-2">
           <label htmlFor="travel-date" className="block text-sm font-bold text-[#1F2933]">Date</label>
           <div className="relative">
             <Calendar aria-hidden className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#667085]" />
@@ -92,20 +90,6 @@ export default function SearchCard({
               value={date}
               onChange={(e) => onDateChange(e.target.value)}
               min={todayLocalIso()}
-              className={fieldClass}
-              required
-            />
-          </div>
-        </div>
-        <div className="space-y-1.5">
-          <label htmlFor="travel-time" className="block text-sm font-bold text-[#1F2933]">Depart after <span className="font-medium text-[#667085]">(India time)</span></label>
-          <div className="relative">
-            <Clock aria-hidden className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#667085]" />
-            <input
-              id="travel-time"
-              type="time"
-              value={time}
-              onChange={(e) => onTimeChange(e.target.value)}
               className={fieldClass}
               required
             />

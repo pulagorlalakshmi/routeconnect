@@ -217,8 +217,28 @@ export default function Login() {
               </div>
 
               {error && (
-                <div className="rounded-xl bg-red-50 border border-red-200 p-3" role="alert">
+                <div className="rounded-xl bg-red-50 border border-red-200 p-3.5 space-y-2.5" role="alert">
                   <p className="text-xs text-red-700 font-extrabold">{error}</p>
+                  {/no account|sign up first/i.test(error) && (
+                    <div className="pt-2 border-t border-red-200/80 flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-red-900">Don't have an account yet?</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTab('signup');
+                          if (emailOrPhone.includes('@')) {
+                            setSignupEmail(emailOrPhone.trim());
+                          } else {
+                            setPhone(emailOrPhone.trim());
+                          }
+                          setError('');
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#146B5B] px-3.5 py-1.5 text-xs font-bold text-white hover:bg-[#0f5447] transition cursor-pointer shadow-xs"
+                      >
+                        Sign Up First →
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 

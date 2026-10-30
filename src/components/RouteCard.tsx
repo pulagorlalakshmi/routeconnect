@@ -347,18 +347,20 @@ export default function RouteCard({
   route,
   routeIndex,
   isFastest: propIsFastest,
-  isBudget: propIsBudget
+  isBudget: propIsBudget,
+  initialShowDetails = false
 }: {
   route: RouteResult;
   routeIndex?: number;
   isFastest?: boolean;
   isBudget?: boolean;
+  initialShowDetails?: boolean;
 }) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const [showDetails, setShowDetails] = useState(false);
+  const [showDetails, setShowDetails] = useState(initialShowDetails);
   const [showMap, setShowMap] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -383,7 +385,8 @@ export default function RouteCard({
       price: route.totalPrice,
       duration: route.totalDurationMinutes,
       transfers: route.totalTransfers,
-      modes: route.segments.map(s => s.mode)
+      modes: route.segments.map(s => s.mode),
+      route: route
     };
 
     if (!user) {

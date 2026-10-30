@@ -115,12 +115,13 @@ describe('train journey cards', () => {
     assert.match(text, /no train fare is estimated/);
   });
 
-  test('data quality: scheduled, unofficial, not live; the bus disclaimer only when a bus is in the journey', () => {
+  test('data quality section is removed from details; schedule evidence stays in the train step', () => {
     const text = openCard(trainJourney());
-    assert.match(text, /Train times are scheduled times from an unofficial copy of the Indian Railways timetable taken on/);
-    assert.match(text, /not live running status/);
+    assert.doesNotMatch(text, /Data quality/);
+    assert.doesNotMatch(text, /Train times are scheduled times from an unofficial copy/);
     assert.doesNotMatch(text, /Bus times come from/);
     assert.doesNotMatch(text, /\bLive tracking verified\b|\bon time\b|\bdelayed\b|seats? available|book now/i);
+    assert.match(text, /scheduled, not live/);
   });
 
   test('a day-2 departure shows its journey day', () => {

@@ -9,11 +9,9 @@ import { clockOf, dateOf, dayDifference, formatDateLabel, formatDuration } from 
 import { formatFareRange } from '../utils/fare';
 import { operatorBusName, serviceNumberOf, vehicleFamilyOf, vehicleTitleOf } from '../utils/busIdentity';
 import { headerLabels } from '../utils/journeyBadges';
-import { journeyTrustSummary } from '../utils/trackingTrust';
 import type { DepartureOption, GroupedRoute } from '../utils/routeGrouping';
 import { getRouteCorridor, getRouteDistanceMeters, getRouteStopsSummary } from '../utils/routeGrouping';
 import { BusSummaryRow } from './BusIdentity';
-import PathRating from './PathRating';
 import JourneySimulation from './JourneySimulation';
 import JourneyTimeline from './JourneyTimeline';
 import RideProviders from './RideProviders';
@@ -87,8 +85,12 @@ export const transfersText = (n: number) => (n === 0 ? 'Direct' : `${n} transfer
 export function journeyHeading(journey: Journey): string {
   const families = new Set(journey.legs.filter(isTransitLeg).map(leg => vehicleFamilyOf(leg)));
   let title = journeyTitle(journey);
-  // For railway journeys, strip "local ride" from the heading per user request
-  if (families.has('train')) {
+  const startsFromCurrentLocation = Boolean(
+    journey.legs.length > 0 &&
+    /current\s*location/i.test((isTransitLeg(journey.legs[0]) ? journey.legs[0].fromStop?.name : (journey.legs[0] as { from?: { name?: string } }).from?.name) || '')
+  );
+  // For railway journeys, strip "local ride" from the heading unless the traveller started from their current location
+  if (families.has('train') && !startsFromCurrentLocation) {
     title = title.replace(/🚕 Local ride \+ /g, '').replace(/ \+ 🚕 Local ride/g, '').replace(/^🚕 Local ride$/, '');
   }
   return families.size > 1 ? `${title} — ${transfersText(journey.transfers)}` : title;
@@ -109,15 +111,15 @@ function cleanDisplayName(name: string | null | undefined, fallback: string): st
 function walkText(leg: Extract<Leg, { mode: 'walk' }>, from = '', to = ''): string {
   const fromName = cleanDisplayName(leg.from?.name, from);
   const toName = cleanDisplayName(leg.to?.name, to);
-  if (leg.kind === 'access') return `Walk to ${toName}`;
-  if (leg.kind === 'egress') return `Walk to ${toName || 'your destination'}`;
+  if (leg.kind === 'access') return `Local ride to ${toName}`;
+  if (leg.kind === 'egress') return `Local ride to ${toName || 'your destination'}`;
   // Between a bus stand and a railway station (bus + train): the two are different places, said plainly.
-  if (isStation(leg.to) || isStation(leg.from)) return `Walk from ${fromName} to ${toName}`;
-  return `Walk between stops: ${fromName} → ${toName}`;
+  if (isStation(leg.to) || isStation(leg.from)) return `Local ride from ${fromName} to ${toName}`;
+  return `Local ride between stops: ${fromName} → ${toName}`;
 }
 
 function legName(leg: Leg, to = ''): string {
-  if (isWalkLeg(leg)) return 'Walk';
+  if (isWalkLeg(leg)) return 'Local ride';
   if (isLocalRideLeg(leg)) {
     const toName = cleanDisplayName(leg.to?.name, to);
     return leg.kind === 'egress' ? `Local ride to ${toName || 'To'}` : leg.kind === 'transfer' ? `Local ride to ${toName}` : isStation(leg.to) ? 'Local ride to the station' : 'Local ride to the stop';
@@ -126,12 +128,11 @@ function legName(leg: Leg, to = ''): string {
   return `${vehicleTitleOf(leg)}${number ? ` ${number}` : ''}`;
 }
 
-const FARE_DISCLAIMER = 'Estimated from route distance and available transit data. Service class is not in the dataset, so the actual fare may vary.';
+const FARE_DISCLAIMER = 'Estimated from route distance.';
 const TRAIN_FARE_NOTE = 'Train fares depend on class and quota and are not in the timetable, so no train fare is estimated. Check IRCTC for fares.';
 
 const isTrainLeg = (leg: Leg): leg is TransitLeg => isTransitLeg(leg) && vehicleFamilyOf(leg) === 'train';
 const isStation = (place: { type?: string }) => place.type === 'station';
-const shortDate = (iso: string | null | undefined) => (iso ? formatDateLabel(iso) : null);
 
 function Metric({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
   return (
@@ -224,11 +225,7 @@ export default function JourneyCard({
   const totalFare = activeJourney.fareEstimate && activeJourney.fareEstimate.min !== null ? formatFareRange(activeJourney.fareEstimate) : null;
   const partialFare = Boolean(activeJourney.fareEstimate && !activeJourney.fareEstimate.complete);
   const onBoardSeconds = transitLegs.reduce((sum, leg) => sum + leg.durationSeconds, 0);
-  const extrapolated = transitLegs.filter(leg => leg.scheduleBasis === 'extrapolated_weekly_pattern');
   const trainLegs = transitLegs.filter(isTrainLeg);
-  const hasBusLeg = transitLegs.some(leg => vehicleFamilyOf(leg) === 'bus');
-  const trainSnapshot = trainLegs.find(leg => leg.scheduleEvidence?.snapshotDate)?.scheduleEvidence?.snapshotDate ?? null;
-  const trainFromRailRadar = trainLegs.some(leg => leg.source?.id === 'railradar');
 
   const corridor = {
     from: cleanDisplayName(from, routeInfo?.origin || getRouteCorridor(activeJourney, from, to).from),
@@ -243,10 +240,13 @@ export default function JourneyCard({
       id: activeJourney.id,
       from,
       to,
-      price: null, // fares are estimated ranges, so no single price is stored
+      price: totalFare,
       duration: Math.round(activeJourney.totalDurationSeconds / 60),
       transfers: activeJourney.transfers,
-      modes: [...(hasRide ? ['local_ride'] : []), ...new Set(transitLegs.map(leg => vehicleFamilyOf(leg)))]
+      modes: [...(hasRide ? ['local_ride'] : []), ...new Set(transitLegs.map(leg => vehicleFamilyOf(leg)))],
+      journey: activeJourney,
+      date: dateOf(activeJourney.departureTime),
+      searchUrl: `${location.pathname}${location.search}`
     };
     if (!user) {
       try {
@@ -369,9 +369,8 @@ export default function JourneyCard({
       {/* 4. A few short facts, only when they apply */}
       {(hasRide || walks || activeJourney.waitingDurationSeconds > 0) && (
         <ul aria-label="Journey facts" className="mt-3 flex flex-wrap gap-1.5">
-          {hasRide && trainLegs.length === 0 && <FactChip title="A generic auto / cab ride to or from a stop; time and fare are estimates.">Local ride included</FactChip>}
+          {(hasRide || walks) && trainLegs.length === 0 && <FactChip title="A generic auto / cab ride to or from a stop; time and fare are estimates.">Local ride included</FactChip>}
           {activeJourney.waitingDurationSeconds > 0 && <FactChip title="Time spent waiting at transfer stops.">Waiting {formatDuration(activeJourney.waitingDurationSeconds)}</FactChip>}
-          {walks && <FactChip title="Straight-line walking estimate.">Walk {formatDuration(activeJourney.walkingDurationSeconds)}</FactChip>}
         </ul>
       )}
 
@@ -431,8 +430,7 @@ export default function JourneyCard({
                 <Row label="Total time">{formatDuration(activeJourney.totalDurationSeconds)}</Row>
                 {onBoardSeconds > 0 && <Row label="On board">{formatDuration(onBoardSeconds)}</Row>}
                 {activeJourney.waitingDurationSeconds > 0 && <Row label="Waiting">{formatDuration(activeJourney.waitingDurationSeconds)}</Row>}
-                {walks && <Row label="Walking">≈ {formatDuration(activeJourney.walkingDurationSeconds)}</Row>}
-                {hasRide && <Row label="Local ride">≈ {formatDuration(activeJourney.localRideDurationSeconds)}</Row>}
+                {(hasRide || walks) && <Row label="Local ride">≈ {formatDuration((activeJourney.localRideDurationSeconds || 0) + (activeJourney.walkingDurationSeconds || 0))}</Row>}
               </dl>
             </DetailSection>
 
@@ -447,9 +445,7 @@ export default function JourneyCard({
                   <dd className="border-t border-[#EEF1EF] pt-1 font-black text-[#1F2933] tabular-nums">{totalFare ?? '—'}</dd>
                 </div>
               </dl>
-              <p className="text-[11px] text-[#667085]">
-                {partialFare ? 'Some parts could not be priced and are not included. ' : ''}{FARE_DISCLAIMER}
-              </p>
+              <p className="text-[11px] text-[#667085]">{FARE_DISCLAIMER}</p>
               {trainLegs.length > 0 && <p className="text-[11px] text-[#667085]">{TRAIN_FARE_NOTE}</p>}
             </DetailSection>
           </div>
@@ -457,33 +453,10 @@ export default function JourneyCard({
           {transitLegs.length > 0 && (
             <DetailSection title="Service & tracking">
               <ul aria-label="Vehicles in this journey" className="space-y-3">
-                {transitLegs.map((leg, i) => <BusSummaryRow key={`${leg.tripId}-${i}`} leg={leg} />)}
+                {transitLegs.map((leg, i) => <BusSummaryRow key={`${leg.tripId}-${i}`} leg={leg} hideConfidenceBadges />)}
               </ul>
             </DetailSection>
           )}
-
-          <DetailSection title="Data quality">
-            <div className="flex flex-wrap items-center gap-2">
-              <ConfidenceBadge level={activeJourney.scheduleConfidence} />
-              {activeJourney.timeQuality !== 'exact' && <span className="text-xs text-[#667085]">Approx. stop times</span>}
-            </div>
-            <ul className="list-disc space-y-1 pl-5 text-xs text-[#667085]">
-              {extrapolated.length > 0 && (
-                <li>The timetable does not cover {formatDateLabel(extrapolated[0].serviceDate)}; this assumes the weekly pattern repeats.</li>
-              )}
-              {hasRide && <li>Local ride times and fares are estimates for a generic auto / cab. No ride provider is connected, so availability is not verified.</li>}
-              {walks && <li>Walking is estimated from straight-line distance, not road routing.</li>}
-              {(hasBusLeg || trainLegs.length === 0) && <li>Bus times come from a community-maintained dataset that has not been verified by the operator. Confirm with the operator before travelling.</li>}
-              {trainLegs.length > 0 && (trainFromRailRadar ? (
-                <li>Train times are scheduled timetable times from RailRadar, an independent service (not Indian Railways), for this date. They are not live running status. Confirm on NTES (139) before travelling.</li>
-              ) : (
-                <li>
-                  Train times are scheduled times from an unofficial copy of the Indian Railways timetable{trainSnapshot ? ` taken on ${shortDate(trainSnapshot)}` : ''}. They are not live running status, and trains changed since then may differ. Confirm on NTES (139) before travelling.
-                </li>
-              ))}
-            </ul>
-            {activeJourney.rating && <PathRating rating={activeJourney.rating} isBest={activeJourney.labels.includes('BEST_PATH')} trust={journeyTrustSummary(activeJourney)} />}
-          </DetailSection>
         </div>
       )}
     </article>
@@ -498,9 +471,10 @@ function LegStep({ leg, step, from = '', to = '', isTrainJourney = false }: { le
 
   if (isWalkLeg(leg)) {
     return (
-      <div className={`${base} border-[#E4E9E6] bg-[#FAFBFA]`}>
-        <p className="text-sm font-bold text-[#1F2933]"><span aria-hidden>🚶 </span>{step}. {walkText(leg, from, to)}</p>
-        <p className="text-xs text-[#667085]">≈ {formatDuration(leg.durationSeconds)} · about {Math.round(leg.distanceMeters)} m · {clockOf(leg.departureTime)} → {clockOf(leg.arrivalTime)}</p>
+      <div className={`${base} border-[#F1D29A] bg-[#FFFBF2]`}>
+        <p className="text-sm font-bold text-[#1F2933]"><span aria-hidden>🚕 </span>{step}. {walkText(leg, from, to)}</p>
+        <p className="text-sm text-[#1F2933]">{fromName} → <strong>{toName}</strong></p>
+        <p className="text-xs text-[#667085]">≈ {formatDuration(leg.durationSeconds)} · about {(leg.distanceMeters / 1000).toFixed(1)} km by road · {clockOf(leg.departureTime)} → {clockOf(leg.arrivalTime)}</p>
       </div>
     );
   }

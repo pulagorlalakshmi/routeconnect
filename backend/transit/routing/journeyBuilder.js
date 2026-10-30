@@ -15,6 +15,7 @@ import { operatorIdentity } from '../sources/operators.js';
 import { serviceNumberFor } from '../sources/gtfs/serviceNumbers.js';
 import { estimateBusFare, estimateLocalRideFare, estimateJourneyFare } from '../fare/fareEstimator.js';
 import { getFareConfig } from '../fare/fareConfig.js';
+import { estimateLocalRide } from './accessEgress.js';
 
 // Follow parent pointers from (round, stop) back to the origin access leg.
 // Returns { accessStop, segments } with segments in travel order.
@@ -238,8 +239,25 @@ export function assembleJourney(network, candidate, ctx) {
     throw new Error('A journey must contain at least one timetable (GTFS) transit leg.');
   }
 
+  const isCurrentLocation = Boolean(
+    ctx.origin?.isCurrentLocation ||
+    /current\s*location/i.test(ctx.origin?.name || '')
+  );
+
+  let effectiveAccess = access;
+  if (isCurrentLocation && access && access.mode !== 'local_ride') {
+    const straight = access.straightLineMeters || access.distanceMeters || 500;
+    const ride = estimateLocalRide(straight, config);
+    effectiveAccess = {
+      ...access,
+      ...ride,
+      mode: 'local_ride',
+      label: 'Estimated local ride'
+    };
+  }
+
   // Leave the origin as late as possible while still catching the first vehicle.
-  const accessSeconds = access?.durationSeconds ?? 0;
+  const accessSeconds = effectiveAccess?.durationSeconds ?? 0;
   const originDeparture = transitSegments[0].depAbs - accessSeconds;
 
   const legs = [];
@@ -254,11 +272,11 @@ export function assembleJourney(network, candidate, ctx) {
   let transitStraightMeters = 0;
   let worstQuality = 0;
 
-  if (access && accessSeconds > 0) {
-    const from = { type: 'origin', name: ctx.origin.name || 'Origin', lat: ctx.origin.lat, lon: ctx.origin.lon };
-    legs.push(endLeg('access', access, from, stopRef(network, chain.accessStop), originDeparture, fmt, fareConfig));
+  if (effectiveAccess && accessSeconds > 0) {
+    const from = { type: 'origin', name: ctx.origin.name || (isCurrentLocation ? '📍 Current Location' : 'Origin'), lat: ctx.origin.lat, lon: ctx.origin.lon };
+    legs.push(endLeg('access', effectiveAccess, from, stopRef(network, chain.accessStop), originDeparture, fmt, fareConfig));
     allConfidences.push(CONFIDENCE.ESTIMATED);
-    if (access.mode === 'local_ride') { rideSeconds += accessSeconds; rideCount++; rideStraightMeters += access.straightLineMeters; }
+    if (effectiveAccess.mode === 'local_ride') { rideSeconds += accessSeconds; rideCount++; rideStraightMeters += effectiveAccess.straightLineMeters; }
     else walkingSeconds += accessSeconds;
   }
 

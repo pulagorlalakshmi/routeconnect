@@ -74,14 +74,14 @@ describe('1. search form', () => {
     onDateChange: noop, onTimeChange: noop, onSwapLocations: noop, onSearch: noop, loading: false, isValid: true
   });
 
-  test('keeps only From, To, Date, Depart after and one primary Search button, with the agreed wording', () => {
+  test('keeps only From, To, Date and one primary Search button, with the agreed wording', () => {
     const markup = card();
     const text = strip(markup);
-    assert.match(text, /^Plan your journey From To Date Depart after \(India time\) Find routes$/);
-    assert.equal((markup.match(/<input /g) || []).length, 4, 'four fields, nothing else');
+    assert.match(text, /^Plan your journey From To Date Find routes$/);
+    assert.equal((markup.match(/<input /g) || []).length, 3, 'three fields, nothing else');
     assert.equal((markup.match(/type="submit"/g) || []).length, 1, 'one primary action');
     assert.match(markup, /<form[^>]*aria-label="Plan your journey"/, 'Enter submits the search');
-    assert.doesNotMatch(text, /Journey Planner|published timetables|Find All Routes/);
+    assert.doesNotMatch(text, /Depart after|Journey Planner|published timetables|Find All Routes/);
   });
 
   test('every field has a real label, and the swap button is a single obvious labelled control', () => {
@@ -96,21 +96,23 @@ describe('1. search form', () => {
 describe('2/3. origin and destination behave differently, on purpose', () => {
   test('the origin leads with "use my current location" and has a GPS button in the field', () => {
     const origin = ui.quickActionsFor('origin');
-    assert.deepEqual(origin.top, ['current_location', 'select_on_map']);
+    assert.deepEqual(origin.top, ['current_location']);
     assert.equal(origin.gpsButtonInField, true);
-    assert.equal(origin.locateOnMapOpen, true);
+    assert.equal(origin.locateOnMapOpen, false);
     const markup = ui.render(ui.LocationInput, { kind: 'origin', label: 'From', placeholder: 'x', value: '', onChange: noop });
     assert.match(markup, /aria-label="Use my current location"/);
+    assert.doesNotMatch(markup, /Select on map/i);
   });
 
-  test('the destination offers "select on map" and no current-location option at all, and never locates on its own', () => {
+  test('the destination offers search and no current-location or map selection, and never locates on its own', () => {
     const destination = ui.quickActionsFor('destination');
-    assert.deepEqual(destination.top, ['select_on_map']);
+    assert.deepEqual(destination.top, []);
     assert.deepEqual(destination.bottom, []);
     assert.equal(destination.gpsButtonInField, false);
     assert.equal(destination.locateOnMapOpen, false, 'opening the map for a destination does not request the location');
     const markup = ui.render(ui.LocationInput, { kind: 'destination', label: 'To', placeholder: 'x', value: '', onChange: noop });
     assert.doesNotMatch(markup, /current location/i);
+    assert.doesNotMatch(markup, /Select on map/i);
     const source = read('components', 'LocationInput.tsx');
     assert.doesNotMatch(source, /as the destination/, 'the destination current-location option is gone');
     assert.match(source, /if \(!allowsCurrentLocation\) return;/, 'GPS lookup is refused for a destination');
@@ -186,11 +188,12 @@ describe('8/9. "More details" holds the rest, organised', () => {
     assert.match(strip(open), /Hide details/);
   });
 
-  test('grouped sections with the hidden information', () => {
+  test('grouped sections with the hidden information (data quality removed)', () => {
     const text = strip(details()).replace(/&amp;/g, "&");
-    for (const heading of ['Journey breakdown', 'Timing', 'Fare breakdown', 'Service & tracking', 'Data quality']) {
+    for (const heading of ['Journey breakdown', 'Timing', 'Fare breakdown', 'Service & tracking']) {
       assert.ok(text.includes(heading), heading);
     }
+    assert.doesNotMatch(text, /Data quality/);
     assert.match(text, /08:00 board at GUNTUR BUS STAND/);
     assert.match(text, /Wait 20 min at PEDAKAKANI/);
     assert.match(text, /Local ride to the stop ₹60–₹90/);
@@ -198,10 +201,7 @@ describe('8/9. "More details" holds the rest, organised', () => {
     assert.match(text, /Approx\. total ₹140–₹210/);
     assert.match(text, /Service No\. 03846/);
     assert.match(text, /Live tracking options/);
-    assert.match(text, /Inferred schedule/);
-    assert.match(text, /weekly pattern repeats/);
-    assert.match(text, /Why this rating\?/);
-    assert.ok(text.indexOf('Journey breakdown') < text.indexOf('Data quality'));
+    assert.doesNotMatch(text, /Why this rating\?/);
   });
 });
 

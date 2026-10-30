@@ -303,17 +303,30 @@ export function LegIdentifier({ leg }: { leg: TransitLeg }) {
 
 // One compact block per vehicle in the journey card: identifier, operator and real stops, then the trust row, then
 // the vehicle registration only when known.
-export function BusSummaryRow({ leg }: { leg: TransitLeg }) {
+export function BusSummaryRow({ leg, hideConfidenceBadges = false }: { leg: TransitLeg; hideConfidenceBadges?: boolean }) {
   const operator = operatorLabelOf(leg);
+  const status = trackingStatusOf(leg);
   return (
-    <li className="space-y-1">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#667085]">
-        <span aria-hidden>{FAMILY_ICON[vehicleFamilyOf(leg)]}</span>
-        <LegIdentifier leg={leg} />
-        <span title={leg.operatorInfo ? `Operator from ${leg.operatorInfo.source}` : undefined} className={leg.operatorInfo?.name || leg.operator ? 'font-semibold text-[#1F2933]' : 'italic'}>{operator}</span>
-        <span className="min-w-0 truncate">{leg.fromStop.name} → {leg.toStop.name}</span>
+    <li className="space-y-1.5">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs">
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[#667085]">
+          <span aria-hidden>{FAMILY_ICON[vehicleFamilyOf(leg)]}</span>
+          <LegIdentifier leg={leg} />
+          <span title={leg.operatorInfo ? `Operator from ${leg.operatorInfo.source}` : undefined} className={leg.operatorInfo?.name || leg.operator ? 'font-semibold text-[#1F2933]' : 'italic'}>{operator}</span>
+          <span className="min-w-0 truncate">{leg.fromStop.name} → {leg.toStop.name}</span>
+        </div>
+        {hideConfidenceBadges && status && (
+          <div className="flex items-center gap-2">
+            <span className={`inline-flex items-center gap-1 text-[11px] font-medium ${status === 'verified' ? 'text-emerald-700' : 'text-[#667085]'}`}>
+              <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${status === 'verified' ? 'bg-emerald-500' : status === 'options_available' ? 'bg-[#9EC5B8]' : 'bg-[#D0D5DD]'}`} />
+              {TRACKING_TEXT[status]}
+            </span>
+            {status === 'verified' && <TrackBus leg={leg} mode="track" />}
+            {status === 'options_available' && <TrackBus leg={leg} mode="check" />}
+          </div>
+        )}
       </div>
-      <div className="pl-6"><LegTrust leg={leg} /></div>
+      {!hideConfidenceBadges && <div className="pl-6"><LegTrust leg={leg} /></div>}
       <div className="pl-6"><VehicleLine leg={leg} /></div>
     </li>
   );

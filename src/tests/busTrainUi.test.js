@@ -82,7 +82,7 @@ describe('a bus + train journey card', () => {
     assert.match(text, /22101/);
     assert.match(text, /TJN/);
     assert.match(text, /TDS/);
-    assert.match(text, /Walk from Test Hub Bus Stand to Test Hub Junction/);
+    assert.match(text, /Local ride from Test Hub Bus Stand to Test Hub Junction/);
     assert.match(text, /board at Test Hub Junction/);
     assert.match(text, /get off at Test Delta/);
   });

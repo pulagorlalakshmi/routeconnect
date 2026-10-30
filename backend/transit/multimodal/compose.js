@@ -48,7 +48,8 @@ const shiftIso = (iso, seconds, utcOffset) => {
 
 function endLeg(kind, point, from, to, config, fareConfig) {
   const straight = haversineMeters(from.lat, from.lon, to.lat, to.lon);
-  if (straight <= COMPOSE_DEFAULTS.walkMaxMeters) {
+  const isCurrentLoc = kind === 'access' && (/current\s*location/i.test(from.name || '') || point?.isCurrentLocation);
+  if (!isCurrentLoc && straight <= COMPOSE_DEFAULTS.walkMaxMeters) {
     const walk = estimateWalk(straight, config);
     return { mode: 'walk', kind, from, to, distanceMeters: walk.distanceMeters, straightLineMeters: walk.straightLineMeters, durationSeconds: walk.durationSeconds, dataConfidence: 'estimated' };
   }

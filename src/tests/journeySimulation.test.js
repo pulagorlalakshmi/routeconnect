@@ -166,9 +166,11 @@ describe('journey card with the simulation', () => {
     assert.doesNotMatch(text, /Approx\. stop times/, 'data-quality notes are in the details');
   });
 
-  test('waiting and walking appear as short chips only when they apply', () => {
+  test('waiting and local ride appear as short chips only when they apply', () => {
     const text = strip(card(journey(twoBuses.legs, { waitingDurationSeconds: 20 * 60, walkingDurationSeconds: 5 * 60 })));
-    assert.match(text, /Waiting 20 min Walk 5 min/);
+    assert.match(text, /Waiting 20 min/);
+    assert.match(text, /Local ride included/);
+    assert.doesNotMatch(text, /Walk \d/);
     const exact = strip(card(journey(direct.legs, { timeQuality: 'exact' })));
     assert.doesNotMatch(exact, /Waiting|Walk \d|Approx\. stop/);
     assert.doesNotMatch(card(journey(direct.legs)), /aria-label="Journey facts"/);

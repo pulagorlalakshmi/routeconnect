@@ -54,6 +54,12 @@ const createUser = db.prepare('INSERT INTO users (name, email, phone, password) 
 const getUserById = db.prepare('SELECT * FROM users WHERE id = ?');
 const getLastId = db.prepare('SELECT last_insert_rowid() as id');
 
+// User search history statements (My Trips)
+const getUserSearches = db.prepare('SELECT id, from_location as "from", to_location as "to", date, time, created_at FROM user_searches WHERE user_id = ? ORDER BY id DESC LIMIT 50');
+const insertUserSearch = db.prepare('INSERT INTO user_searches (user_id, from_location, to_location, date, time) VALUES (?, ?, ?, ?, ?)');
+const deleteUserSearch = db.prepare('DELETE FROM user_searches WHERE id = ? AND user_id = ?');
+const findDuplicateSearch = db.prepare('SELECT id FROM user_searches WHERE user_id = ? AND LOWER(from_location) = LOWER(?) AND LOWER(to_location) = LOWER(?) AND date = ? AND (time = ? OR (time IS NULL AND ? IS NULL)) ORDER BY id DESC LIMIT 1');
+
 // In-memory session store (sessions are lost on server restart)
 const sessions = new Map();
 
@@ -119,11 +125,11 @@ app.post('/api/auth/login', async (req, res) => {
     const user = findUserByIdentifier.get(emailIdentifier, normalizedIdentifier);
 
     if (!user) {
-      return res.status(401).json({ error: 'Invalid email/phone or password' });
+      return res.status(401).json({ error: 'There is no account created on this account, sign up first' });
     }
     const passwordMatch = await bcrypt.compare(password, user.password);
     if (!passwordMatch) {
-      return res.status(401).json({ error: 'Invalid email/phone or password' });
+      return res.status(401).json({ error: 'Invalid password. Please try again.' });
     }
 
     const sessionId = createSession({ userId: user.id, email: user.email, name: user.name });
@@ -160,6 +166,94 @@ app.post('/api/auth/logout', (req, res) => {
   const token = getSessionToken(req);
   if (token) sessions.delete(token);
   return res.status(200).json({ message: 'Logged out successfully' });
+});
+
+// User Search History / My Trips Endpoints
+app.get('/api/user/trips', (req, res) => {
+  const token = getSessionToken(req);
+  const session = sessions.get(token);
+  if (!session) return res.status(401).json({ error: 'Unauthorized: Please sign in' });
+  try {
+    const trips = getUserSearches.all(session.userId);
+    return res.status(200).json({ trips });
+  } catch (error) {
+    console.error('Error fetching user trips:', error);
+    return res.status(500).json({ error: 'Failed to fetch user trips' });
+  }
+});
+
+app.post('/api/user/trips', (req, res) => {
+  const token = getSessionToken(req);
+  const session = sessions.get(token);
+  if (!session) return res.status(401).json({ error: 'Unauthorized: Please sign in' });
+  try {
+    const { from, to, date, time } = req.body;
+    if (!from || !to || !date) {
+      return res.status(400).json({ error: 'from, to, and date are required' });
+    }
+    const cleanFrom = String(from).trim();
+    const cleanTo = String(to).trim();
+    const cleanDate = String(date).trim();
+    const cleanTime = time ? String(time).trim() : null;
+
+    const dup = findDuplicateSearch.get(session.userId, cleanFrom, cleanTo, cleanDate, cleanTime, cleanTime);
+    let tripId;
+    if (dup) {
+      tripId = dup.id;
+    } else {
+      insertUserSearch.run(session.userId, cleanFrom, cleanTo, cleanDate, cleanTime);
+      tripId = getLastId.get().id;
+    }
+    return res.status(201).json({
+      success: true,
+      trip: { id: tripId, from: cleanFrom, to: cleanTo, date: cleanDate, time: cleanTime }
+    });
+  } catch (error) {
+    console.error('Error saving user trip:', error);
+    return res.status(500).json({ error: 'Failed to save trip' });
+  }
+});
+
+app.post('/api/user/trips/sync', (req, res) => {
+  const token = getSessionToken(req);
+  const session = sessions.get(token);
+  if (!session) return res.status(401).json({ error: 'Unauthorized: Please sign in' });
+  try {
+    const { trips } = req.body;
+    if (Array.isArray(trips)) {
+      for (const t of trips) {
+        if (t && t.from && t.to && t.date) {
+          const cleanFrom = String(t.from).trim();
+          const cleanTo = String(t.to).trim();
+          const cleanDate = String(t.date).trim();
+          const cleanTime = t.time ? String(t.time).trim() : null;
+          const dup = findDuplicateSearch.get(session.userId, cleanFrom, cleanTo, cleanDate, cleanTime, cleanTime);
+          if (!dup) {
+            insertUserSearch.run(session.userId, cleanFrom, cleanTo, cleanDate, cleanTime);
+          }
+        }
+      }
+    }
+    const userTrips = getUserSearches.all(session.userId);
+    return res.status(200).json({ trips: userTrips });
+  } catch (error) {
+    console.error('Error syncing user trips:', error);
+    return res.status(500).json({ error: 'Failed to sync trips' });
+  }
+});
+
+app.delete('/api/user/trips/:id', (req, res) => {
+  const token = getSessionToken(req);
+  const session = sessions.get(token);
+  if (!session) return res.status(401).json({ error: 'Unauthorized: Please sign in' });
+  try {
+    const id = parseInt(req.params.id, 10);
+    deleteUserSearch.run(id, session.userId);
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('Error deleting user trip:', error);
+    return res.status(500).json({ error: 'Failed to delete trip' });
+  }
 });
 
 // Location Search & Autocomplete

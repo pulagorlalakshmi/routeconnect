@@ -1,28 +1,29 @@
 import { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { MapPin, LogOut, User, Menu, X, Trash2, Bookmark, Briefcase, FileText } from 'lucide-react';
+import { MapPin, LogOut, User, Menu, X, Trash2, Bookmark, Briefcase, FileText, ArrowLeft, ExternalLink } from 'lucide-react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-
-interface SavedTrip {
-  id: number;
-  from: string;
-  to: string;
-  date: string;
-  time?: string;
-}
+import { getLocalTrips, fetchServerTrips, removeTripFromHistory, saveLocalTrips } from '../utils/tripHistory';
+import type { SavedTrip } from '../utils/tripHistory';
+import JourneyCard from './JourneyCard';
+import RouteCard from './RouteCard';
+import { todayLocalIso } from '../utils/dateTime';
 
 interface SavedRoute {
   id: string;
   from: string;
   to: string;
-  price: number | null; // null: no fare data exists for timetable-based routes
+  price?: string | number | null; // null: no fare data exists for timetable-based routes
   duration: number;
   transfers: number;
   modes: string[];
+  journey?: any;
+  route?: any;
+  date?: string;
+  searchUrl?: string;
 }
 
 export default function Navbar() {
-  const { user, logout } = useAuth();
+  const { user, sessionId, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [showDropdown, setShowDropdown] = useState(false);
@@ -33,6 +34,7 @@ export default function Navbar() {
   const [showSavedRoutes, setShowSavedRoutes] = useState(false);
   const [tripsList, setTripsList] = useState<SavedTrip[]>([]);
   const [routesList, setRoutesList] = useState<SavedRoute[]>([]);
+  const [selectedRouteDetail, setSelectedRouteDetail] = useState<SavedRoute | null>(null);
   
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -48,28 +50,40 @@ export default function Navbar() {
 
   const handleLogout = async () => {
     await logout();
+    setTripsList([]);
     setShowDropdown(false);
   };
 
   // Loads parameters dynamically when modal is opened
-  const openMyTripsModal = () => {
-    const list = JSON.parse(localStorage.getItem('my_trips') || '[]');
-    setTripsList(list);
+  const openMyTripsModal = async () => {
     setShowMyTrips(true);
     setShowMobileMenu(false);
+
+    // Immediately load local history for this user
+    const local = getLocalTrips(user?.id);
+    setTripsList(local);
+
+    // If user is signed in, refresh from server
+    if (user && sessionId) {
+      const serverTrips = await fetchServerTrips(sessionId);
+      if (serverTrips) {
+        setTripsList(serverTrips);
+        saveLocalTrips(serverTrips, user.id);
+      }
+    }
   };
 
   const openSavedRoutesModal = () => {
     const list = JSON.parse(localStorage.getItem('saved_routes') || '[]');
     setRoutesList(list);
+    setSelectedRouteDetail(null);
     setShowSavedRoutes(true);
     setShowMobileMenu(false);
   };
 
-  const handleDeleteTrip = (id: number, e: React.MouseEvent) => {
+  const handleDeleteTrip = async (id: number, e: React.MouseEvent) => {
     e.stopPropagation();
-    const updated = tripsList.filter(t => t.id !== id);
-    localStorage.setItem('my_trips', JSON.stringify(updated));
+    const updated = await removeTripFromHistory(id, user, sessionId);
     setTripsList(updated);
   };
 
@@ -78,6 +92,23 @@ export default function Navbar() {
     const updated = routesList.filter(r => r.id !== id);
     localStorage.setItem('saved_routes', JSON.stringify(updated));
     setRoutesList(updated);
+    if (selectedRouteDetail?.id === id) {
+      setSelectedRouteDetail(null);
+    }
+  };
+
+  const handleSelectRoute = (route: SavedRoute) => {
+    if (route.journey || route.route) {
+      setSelectedRouteDetail(route);
+    } else {
+      setShowSavedRoutes(false);
+      const params = new URLSearchParams({
+        from: route.from,
+        to: route.to,
+        date: route.date || todayLocalIso()
+      });
+      navigate(`/search-results?${params.toString()}`);
+    }
   };
 
   const handleSelectTrip = (trip: SavedTrip) => {
@@ -333,11 +364,37 @@ export default function Navbar() {
               </button>
             </div>
 
+            {user ? (
+              <div className="px-4 py-2.5 bg-[#EEF6F3] border-b border-[#D9DED9] flex items-center justify-between text-xs">
+                <span className="font-bold text-[#146B5B] flex items-center gap-1.5">
+                  <User className="h-3.5 w-3.5" />
+                  {user.name}
+                </span>
+                <span className="text-[#667085] font-semibold">
+                  {tripsList.length} search{tripsList.length === 1 ? '' : 'es'} saved
+                </span>
+              </div>
+            ) : (
+              <div className="px-4 py-2.5 bg-amber-50 border-b border-amber-200 flex items-center justify-between text-xs">
+                <span className="text-amber-800 font-semibold">Sign in to save search history to your account</span>
+                <button
+                  onClick={() => { setShowMyTrips(false); navigate('/login'); }}
+                  className="font-bold text-[#146B5B] hover:underline cursor-pointer"
+                >
+                  Sign In
+                </button>
+              </div>
+            )}
+
             <div className="p-4 overflow-y-auto space-y-3 flex-1">
               {tripsList.length === 0 ? (
                 <div className="py-10 text-center space-y-1">
                   <p className="text-sm font-bold text-[#1F2933]">No trips saved yet</p>
-                  <p className="text-xs text-[#667085]">Searched journeys will automatically appear here.</p>
+                  <p className="text-xs text-[#667085]">
+                    {user
+                      ? 'Searched journeys will automatically appear here on your account.'
+                      : 'Searched journeys will appear here. Sign in to sync across devices.'}
+                  </p>
                 </div>
               ) : (
                 tripsList.map((trip) => (
@@ -366,52 +423,155 @@ export default function Navbar() {
 
       {/* SAVED ROUTES MODAL OVERLAY */}
       {showSavedRoutes && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1F2933]/55 backdrop-blur-sm p-4 animate-fadeIn">
-          <div className="w-full max-w-md bg-white rounded-xl shadow-xl border border-[#D9DED9] overflow-hidden flex flex-col max-h-[85vh]">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1F2933]/55 backdrop-blur-sm p-3 sm:p-4 animate-fadeIn">
+          <div className={`w-full ${selectedRouteDetail ? 'max-w-3xl' : 'max-w-md'} bg-white rounded-2xl shadow-2xl border border-[#D9DED9] overflow-hidden flex flex-col max-h-[90vh] transition-all duration-200`}>
+            
+            {/* Modal Header */}
             <div className="flex items-center justify-between bg-white border-b border-[#D9DED9] p-4 shrink-0">
               <div className="flex items-center gap-2">
-                <Bookmark className="h-4.5 w-4.5 text-[#146B5B]" />
-                <h3 className="text-base font-black text-[#1F2933]">Saved Routes</h3>
+                {selectedRouteDetail ? (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedRouteDetail(null)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-[#D9DED9] bg-white px-2.5 py-1 text-xs font-bold text-[#146B5B] hover:bg-[#EEF6F3] transition cursor-pointer"
+                  >
+                    <ArrowLeft className="h-3.5 w-3.5" />
+                    Back
+                  </button>
+                ) : (
+                  <div className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-[#EEF6F3] text-[#146B5B]">
+                    <Bookmark className="h-4.5 w-4.5" />
+                  </div>
+                )}
+                <h3 className="text-base font-black text-[#1F2933]">
+                  {selectedRouteDetail ? 'Saved Journey Details' : 'Saved Routes'}
+                </h3>
               </div>
               <button
-                onClick={() => setShowSavedRoutes(false)}
-                className="p-1 rounded-full hover:bg-gray-50 transition"
+                type="button"
+                onClick={() => { setShowSavedRoutes(false); setSelectedRouteDetail(null); }}
+                className="p-1 rounded-full hover:bg-gray-100 transition cursor-pointer"
+                aria-label="Close modal"
               >
                 <X className="h-4.5 w-4.5 text-[#667085]" />
               </button>
             </div>
 
-            <div className="p-4 overflow-y-auto space-y-3 flex-1">
-              {routesList.length === 0 ? (
-                <div className="py-10 text-center space-y-1">
-                  <p className="text-sm font-bold text-[#1F2933]">No routes saved yet</p>
-                  <p className="text-xs text-[#667085]">Pin route combinations under details inside Search Results.</p>
-                </div>
-              ) : (
-                routesList.map((route) => (
-                  <div
-                    key={route.id}
-                    className="p-3 bg-white border border-[#D9DED9] rounded-lg flex items-center justify-between transition"
-                  >
+            {/* Modal Body */}
+            <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1 bg-[#FAFCFB]">
+              {selectedRouteDetail ? (
+                <div className="space-y-4">
+                  {/* Action banner */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white border border-[#D9DED9] p-3 shadow-2xs">
                     <div>
-                      <p className="text-sm font-bold text-[#1F2933]">{route.from} ➔ {route.to}</p>
-                      <p className="text-xs text-[#667085] font-semibold mt-1">
-                        ⏱ {Math.floor(route.duration / 60)}h {route.duration % 60}m • 🔄 {route.transfers} Transfers
-                      </p>
+                      <span className="text-[11px] uppercase font-extrabold tracking-wider text-[#146B5B]">Saved Route Itinerary</span>
+                      <p className="text-sm font-black text-[#1F2933]">{selectedRouteDetail.from} ➔ {selectedRouteDetail.to}</p>
                     </div>
-                    <div className="flex items-center gap-3">
-                      {route.price !== null && route.price !== undefined && (
-                        <span className="text-sm font-black text-[#146B5B]">₹{route.price}</span>
-                      )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSavedRoutes(false);
+                        const params = new URLSearchParams({
+                          from: selectedRouteDetail.from,
+                          to: selectedRouteDetail.to,
+                          date: selectedRouteDetail.date || todayLocalIso()
+                        });
+                        navigate(`/search-results?${params.toString()}`);
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-[#146B5B] px-3.5 py-2 text-xs font-bold text-white hover:bg-[#0f5447] transition shadow-xs cursor-pointer"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      Live Route Search
+                    </button>
+                  </div>
+
+                  {/* Render the full JourneyCard or RouteCard with breakdown */}
+                  {selectedRouteDetail.journey ? (
+                    <JourneyCard
+                      journey={selectedRouteDetail.journey}
+                      index={1}
+                      from={selectedRouteDetail.from}
+                      to={selectedRouteDetail.to}
+                      initialShowDetails={true}
+                    />
+                  ) : selectedRouteDetail.route ? (
+                    <RouteCard
+                      route={selectedRouteDetail.route}
+                      initialShowDetails={true}
+                    />
+                  ) : (
+                    <div className="py-8 text-center space-y-2">
+                      <p className="text-sm font-semibold text-[#1F2933]">Cached journey breakdown is not available for this legacy entry.</p>
                       <button
-                        onClick={(e) => handleDeleteRoute(route.id, e)}
-                        className="p-2 text-[#667085] hover:text-red-600 rounded-md hover:bg-red-50 transition"
+                        type="button"
+                        onClick={() => {
+                          setShowSavedRoutes(false);
+                          const params = new URLSearchParams({
+                            from: selectedRouteDetail.from,
+                            to: selectedRouteDetail.to,
+                            date: selectedRouteDetail.date || todayLocalIso()
+                          });
+                          navigate(`/search-results?${params.toString()}`);
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-[#146B5B] px-4 py-2 text-xs font-bold text-white hover:bg-[#0f5447] transition cursor-pointer"
                       >
-                        <Trash2 className="h-4 w-4" />
+                        Search live route now
                       </button>
                     </div>
+                  )}
+                </div>
+              ) : routesList.length === 0 ? (
+                <div className="py-12 text-center space-y-2">
+                  <div className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-[#667085] mb-1">
+                    <Bookmark className="h-6 w-6" />
                   </div>
-                ))
+                  <p className="text-base font-bold text-[#1F2933]">No routes saved yet</p>
+                  <p className="text-xs text-[#667085] max-w-xs mx-auto">Click "Save" on any route card in your search results to keep it here with its complete breakdown and stops.</p>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  <p className="text-xs font-semibold text-[#667085] px-1">Click a route to view its full breakdown &amp; details:</p>
+                  {routesList.map((route) => (
+                    <div
+                      key={route.id}
+                      onClick={() => handleSelectRoute(route)}
+                      className="p-3.5 bg-white hover:bg-[#F5FAF8] border border-[#D9DED9] hover:border-[#146B5B] rounded-xl flex items-center justify-between cursor-pointer transition shadow-2xs group"
+                    >
+                      <div className="min-w-0 pr-3 space-y-1">
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-bold text-[#1F2933] group-hover:text-[#146B5B] transition truncate">
+                            {route.from} ➔ {route.to}
+                          </p>
+                          <span className="text-[10px] uppercase font-extrabold tracking-wider px-1.5 py-0.5 rounded-md bg-[#EEF6F3] text-[#146B5B]">
+                            View details →
+                          </span>
+                        </div>
+                        <p className="text-xs text-[#667085] font-semibold flex items-center gap-2">
+                          <span>⏱ {Math.floor(route.duration / 60)}h {route.duration % 60}m</span>
+                          <span>•</span>
+                          <span>🔄 {route.transfers === 0 ? 'Direct' : `${route.transfers} Transfer${route.transfers === 1 ? '' : 's'}`}</span>
+                          {route.price && (
+                            <>
+                              <span>•</span>
+                              <span className="font-bold text-[#1F2933]">{route.price}</span>
+                            </>
+                          )}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteRoute(route.id, e)}
+                          title="Remove saved route"
+                          aria-label="Remove saved route"
+                          className="p-2 text-[#667085] hover:text-red-600 rounded-lg hover:bg-red-50 transition cursor-pointer"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </div>

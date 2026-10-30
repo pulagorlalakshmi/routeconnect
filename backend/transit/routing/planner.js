@@ -141,9 +141,17 @@ export function planJourneys(network, query, { config = getRoutingConfig(), fare
     datasetWarning = `Transit schedule is based on a community dataset last valid through ${dataset.valid_to}.`;
     warn('FEED_EXPIRED', 'warning', datasetWarning);
   }
-  warn('UNVERIFIED_DATASET', 'info', 'Schedule data comes from a community-maintained dataset and has not been verified by the transit operator.');
-
-  const origin = { lat: query.fromLat, lon: query.fromLng, name: resolved?.from?.name || (typeof query.from === 'string' && query.from.trim() ? query.from.trim() : 'Origin') };
+  const isFromCurrentLocation = Boolean(
+    query.isCurrentLocation ||
+    /current\s*location/i.test(query.from || '') ||
+    /current\s*location/i.test(resolved?.from?.name || '')
+  );
+  const origin = {
+    lat: query.fromLat,
+    lon: query.fromLng,
+    name: resolved?.from?.name || (typeof query.from === 'string' && query.from.trim() ? query.from.trim() : (isFromCurrentLocation ? '📍 Current Location' : 'Origin')),
+    isCurrentLocation: isFromCurrentLocation
+  };
   const destination = { lat: query.toLat, lon: query.toLng, name: resolved?.to?.name || (typeof query.to === 'string' && query.to.trim() ? query.to.trim() : 'Destination') };
   const serviceDays = buildServiceDays(network, query, config);
   const anchorDayNumber = isoToDayNumber(query.date);

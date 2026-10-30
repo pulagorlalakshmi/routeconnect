@@ -50,14 +50,14 @@ const toSuggestion = (place: PlaceSuggestion): SuggestionItem => ({
 });
 
 // Quick actions offered in each field's dropdown, in order. "Use my current location" belongs to the origin only: a
-// journey to where you already are is not a journey. The destination offers place search and "select on map". Only the
+// journey to where you already are is not a journey. The destination offers place search. Only the
 // origin's map picker centres on the user's location as it opens.
 export type LocationKind = 'origin' | 'destination';
 export type QuickAction = 'current_location' | 'select_on_map';
 export function quickActionsFor(kind: LocationKind): { top: QuickAction[]; bottom: QuickAction[]; gpsButtonInField: boolean; locateOnMapOpen: boolean } {
   return kind === 'origin'
-    ? { top: ['current_location', 'select_on_map'], bottom: [], gpsButtonInField: true, locateOnMapOpen: true }
-    : { top: ['select_on_map'], bottom: [], gpsButtonInField: false, locateOnMapOpen: false };
+    ? { top: ['current_location'], bottom: [], gpsButtonInField: true, locateOnMapOpen: false }
+    : { top: [], bottom: [], gpsButtonInField: false, locateOnMapOpen: false };
 }
 
 interface LocationInputProps {
@@ -404,23 +404,7 @@ export default function LocationInput({ kind = 'origin', label, placeholder, val
 
   const renderAction = (action: QuickAction) => {
     if (action === 'select_on_map') {
-      return (
-        <button
-          key={action}
-          type="button"
-          data-action={action}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => {
-            setRequestLocationOnOpen(actions.locateOnMapOpen);
-            setShowMapPicker(true);
-            setIsFocused(false);
-          }}
-          className="w-full px-4 py-3 text-left text-sm text-[#1F2933] hover:bg-[#F7FAF9] flex items-center gap-2.5 border-b border-[#EEF1EF] font-bold transition"
-        >
-          <Map className="h-4 w-4 text-[#667085]" />
-          Select on map
-        </button>
-      );
+      return null;
     }
     return (
       <button

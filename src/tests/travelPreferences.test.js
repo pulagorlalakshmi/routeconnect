@@ -46,17 +46,18 @@ const GUNTUR_BUS_STAND = { lat: 16.2991, lng: 80.4575 };
 const VIJAYAWADA_PNBS = { lat: 16.5097, lng: 80.6185 };
 
 describe('1. destination: no "current location" option', () => {
-  test('only the origin offers current location; the destination offers map selection', () => {
+  test('only the origin offers current location; the destination offers no current location or select on map', () => {
     assert.ok(ui.quickActionsFor('origin').top.includes('current_location'));
     const destination = ui.quickActionsFor('destination');
     assert.ok(![...destination.top, ...destination.bottom].includes('current_location'));
-    assert.ok(destination.top.includes('select_on_map'));
+    assert.ok(![...destination.top, ...destination.bottom].includes('select_on_map'));
   });
 
   test('the destination field renders no current-location control and no GPS button', () => {
     const markup = ui.render(ui.LocationInput, { kind: 'destination', label: 'To', placeholder: 'Search a place or stop', value: 'Guntur', onChange: noop });
     assert.doesNotMatch(markup, /current location/i);
     assert.doesNotMatch(markup, /aria-label="Use my current location"/);
+    assert.doesNotMatch(markup, /Select on map/i);
   });
 
   test('the map dialog offers "Use my current location" only to the origin, and map picks still report coordinates', () => {
@@ -120,11 +121,11 @@ describe('2/3. place objects: swap and same-place validation', () => {
 });
 
 describe('4. the search form asks only the essentials', () => {
-  test('From, To, Date, Depart after and one "Find routes" button; no preferences on the form', () => {
+  test('From, To, Date and one "Find routes" button; no preferences on the form', () => {
     const markup = searchCard();
-    assert.match(strip(markup), /^Plan your journey From To Date Depart after \(India time\) Find routes$/);
-    assert.doesNotMatch(markup, /preferences/i);
-    assert.equal((markup.match(/<input /g) || []).length, 4);
+    assert.match(strip(markup), /^Plan your journey From To Date Find routes$/);
+    assert.doesNotMatch(markup, /preferences|Depart after/i);
+    assert.equal((markup.match(/<input /g) || []).length, 3);
     assert.doesNotMatch(read('components', 'SearchCard.tsx'), /TravelPreferences|onPreferencesChange/);
   });
 

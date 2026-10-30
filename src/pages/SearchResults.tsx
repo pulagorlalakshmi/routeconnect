@@ -3,6 +3,8 @@ import type { ReactNode } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import JourneyCard from '../components/JourneyCard';
+import { useAuth } from '../context/AuthContext';
+import { recordSearchTrip } from '../utils/tripHistory';
 import { groupJourneysByRoute } from '../utils/routeGrouping';
 import type { SourceReport } from '../services/planService';
 
@@ -122,6 +124,7 @@ export default function SearchResults() {
 }
 
 function PlannedResults() {
+  const { user, sessionId } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
 
@@ -129,6 +132,12 @@ function PlannedResults() {
   const to = searchParams.get('to') || '';
   const date = searchParams.get('date') || todayLocalIso();
   const time = searchParams.get('time') || nowLocalHHMM();
+
+  useEffect(() => {
+    if (from.trim() && to.trim() && date) {
+      recordSearchTrip({ from, to, date, time }, user, sessionId);
+    }
+  }, [from, to, date, time, user, sessionId]);
   const fromLat = finiteOrNull(searchParams.get('fromLat'));
   const fromLng = finiteOrNull(searchParams.get('fromLng'));
   const toLat = finiteOrNull(searchParams.get('toLat'));

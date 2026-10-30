@@ -64,7 +64,7 @@ export default function Signup() {
             </div>
             <div>
               <h1 className="text-4xl font-black tracking-tight text-[#1F2933] sm:text-5xl">
-                Start planning
+                RouteConnect
               </h1>
               <p className="mt-2 text-xs uppercase tracking-wider font-bold text-[#146B5B]">
                 Create your RouteConnect account

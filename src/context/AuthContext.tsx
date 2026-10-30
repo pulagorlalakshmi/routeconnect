@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { syncPendingTripsWithServer } from '../utils/tripHistory';
 
 interface User {
   id: number;
@@ -83,6 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       localStorage.setItem('routeconnect-session', data.sessionId);
       
       syncPendingSaveRoute();
+      syncPendingTripsWithServer(data.sessionId, data.user.id);
 
       if (redirectTo) {
         navigate(redirectTo);
@@ -109,6 +111,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       localStorage.setItem('routeconnect-session', data.sessionId);
 
       syncPendingSaveRoute();
+      syncPendingTripsWithServer(data.sessionId, data.user.id);
 
       if (redirectTo) {
         navigate(redirectTo);
@@ -132,6 +135,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSessionId(null);
       localStorage.removeItem('routeconnect-user');
       localStorage.removeItem('routeconnect-session');
+      localStorage.removeItem('my_trips');
       navigate('/');
     } catch (error) {
       console.error('Logout error:', error);
@@ -140,6 +144,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSessionId(null);
       localStorage.removeItem('routeconnect-user');
       localStorage.removeItem('routeconnect-session');
+      localStorage.removeItem('my_trips');
       navigate('/');
     }
   };

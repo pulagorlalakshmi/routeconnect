@@ -212,6 +212,21 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_transfers_route_id ON transfers(route_id);
   `);
 
+  // 12. User Search History / My Trips (For signed-in users)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_searches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      from_location TEXT NOT NULL,
+      to_location TEXT NOT NULL,
+      date TEXT NOT NULL,
+      time TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_searches_user ON user_searches(user_id, id DESC);
+  `);
+
   // Seed Static Locations and Multi-Modal Topology
   seedLocations();
   seedTransportStops();
